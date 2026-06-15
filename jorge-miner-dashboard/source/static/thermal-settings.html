@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="apple-touch-icon" href="/static/icon.png">
+<link rel="icon" type="image/png" href="/static/icon.png">
+<meta name="theme-color" content="#09090b">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thermal Settings</title>
+<link rel="stylesheet" href="/static/thermal-settings.css">
+</head>
+<body>
+<main class="settings-page">
+    <header>
+        <div>
+            <p class="eyebrow">MINER DASHBOARD</p>
+            <h1>Thermal Settings</h1>
+            <p class="subtitle">Changes are loaded by the thermal manager on its next 60-second cycle.</p>
+        </div>
+        <a class="back-link" href="/">Back to Dashboard</a>
+    </header>
+
+    <div id="message" class="message" hidden></div>
+    <div id="minerList" class="miner-list">
+        <div class="loading">Loading thermal configuration...</div>
+    </div>
+</main>
+<script src="/static/thermal-settings.js"></script>
+</body>
+</html>

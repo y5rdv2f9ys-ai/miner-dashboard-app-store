@@ -3,6 +3,7 @@ import json
 import csv
 import mimetypes
 import os
+import math
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -34,10 +35,12 @@ BRAIINS_TOKEN_PATH = DATA_DIR / ".braiins_api_token"
 BCH_SOLO_ADDRESS = "qq04xrcpzwvw2gjpxh653txnm9qaq9fesuq652e4wn"
 STATE_LOCK = threading.Lock()
 SNAPSHOT_LOCK = threading.Lock()
+CONFIG_LOCK = threading.Lock()
 COLLECTOR_WAKE = threading.Event()
 DASHBOARD_SNAPSHOT = None
 
 RUNS_PATH = DATA_DIR / "active_mining_runs.json"
+MINERS_PATH = DATA_DIR / "miners_v2.json"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
 BTC_BLOCKS_DB = Path(
@@ -135,8 +138,123 @@ EXPECTED_TH = {
 }
 
 def load_miners():
-    with (DATA_DIR / "miners_v2.json").open("r") as f:
+    with MINERS_PATH.open("r") as f:
         return json.load(f)
+
+THERMAL_FIELDS = (
+    "base_freq",
+    "hot_freq",
+    "critical_freq",
+    "warn_temp",
+    "critical_temp",
+    "recover_temp",
+)
+
+def validate_thermal_settings(data):
+    if not isinstance(data, dict):
+        raise ValueError("Settings must be a JSON object")
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Miner name is required")
+
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("Enabled must be true or false")
+
+    settings = {"name": name.strip(), "enabled": enabled}
+    for field in THERMAL_FIELDS:
+        value = data.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field} must be a number")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"{field} must be a finite number")
+        settings[field] = value
+
+    for field in ("base_freq", "hot_freq", "critical_freq"):
+        value = settings[field]
+        if not value.is_integer() or not 1 <= value <= 2000:
+            raise ValueError(f"{field} must be a whole number between 1 and 2000")
+        settings[field] = int(value)
+
+    for field in ("warn_temp", "critical_temp", "recover_temp"):
+        if not 1 <= settings[field] <= 120:
+            raise ValueError(f"{field} must be between 1 and 120")
+
+    if not (
+        settings["critical_freq"]
+        <= settings["hot_freq"]
+        <= settings["base_freq"]
+    ):
+        raise ValueError(
+            "Frequency order must be critical <= hot <= base"
+        )
+
+    if not (
+        settings["recover_temp"]
+        < settings["warn_temp"]
+        < settings["critical_temp"]
+    ):
+        raise ValueError(
+            "Temperature order must be recovery < warning < critical"
+        )
+
+    return settings
+
+def save_thermal_settings(data):
+    settings = validate_thermal_settings(data)
+
+    with CONFIG_LOCK:
+        miners = load_miners()
+        matches = [miner for miner in miners if miner.get("name") == settings["name"]]
+        if len(matches) != 1:
+            raise LookupError("Miner was not found or its name is not unique")
+
+        miner = matches[0]
+        miner["enabled"] = settings["enabled"]
+        for field in THERMAL_FIELDS:
+            miner[field] = settings[field]
+
+        temp_path = MINERS_PATH.with_name(f"{MINERS_PATH.name}.tmp")
+        with temp_path.open("w") as output:
+            json.dump(miners, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temp_path, MINERS_PATH)
+
+    COLLECTOR_WAKE.set()
+    return miner
+
+def thermal_settings_payload():
+    live = get_dashboard_snapshot() or empty_dashboard_snapshot()
+    live_by_name = {
+        miner.get("name"): miner for miner in live.get("miners", [])
+    }
+    miners = []
+    with CONFIG_LOCK:
+        configured = load_miners()
+
+    for miner in configured:
+        current = live_by_name.get(miner.get("name"), {})
+        miners.append({
+            "name": miner.get("name", ""),
+            "type": miner.get("type", ""),
+            "ip": miner.get("ip", ""),
+            "enabled": miner.get("enabled", True),
+            "base_freq": miner.get("base_freq"),
+            "hot_freq": miner.get("hot_freq"),
+            "critical_freq": miner.get("critical_freq"),
+            "warn_temp": miner.get("warn_temp"),
+            "critical_temp": miner.get("critical_temp"),
+            "recover_temp": miner.get("recover_temp"),
+            "current_temp": current.get("temp"),
+            "current_freq": current.get("freq"),
+            "status": current.get("status", "OFFLINE"),
+            "online": current.get("online", False),
+        })
+    return {"miners": miners, "check_interval_seconds": 60}
 
 def collect_miners(miners):
     with ThreadPoolExecutor(max_workers=max(1, len(miners))) as executor:
@@ -683,13 +801,47 @@ class Handler(BaseHTTPRequestHandler):
         global LAST_HISTORY_WRITE
 
         try:
-            from pathlib import Path
-            import json
-            import time
-
-            if self.path in ("/reset_run", "/reset_all_runs_logs") and not self.is_same_origin():
+            protected_paths = (
+                "/reset_run",
+                "/reset_all_runs_logs",
+                "/api/thermal-settings",
+            )
+            if self.path in protected_paths and not self.is_same_origin():
                 self.send_response(403)
                 self.end_headers()
+                return
+
+            if self.path == "/api/thermal-settings":
+                length = int(self.headers.get("Content-Length", 0))
+                if length <= 0 or length > 16384:
+                    self.send_json(400, {"ok": False, "error": "Invalid request size"})
+                    return
+
+                try:
+                    data = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self.send_json(400, {"ok": False, "error": "Invalid JSON body"})
+                    return
+                try:
+                    miner = save_thermal_settings(data)
+                except ValueError as error:
+                    self.send_json(400, {"ok": False, "error": str(error)})
+                    return
+                except LookupError as error:
+                    self.send_json(404, {"ok": False, "error": str(error)})
+                    return
+
+                self.send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "miner": {
+                            "name": miner["name"],
+                            "enabled": miner.get("enabled", True),
+                            **{field: miner[field] for field in THERMAL_FIELDS},
+                        },
+                    },
+                )
                 return
 
             if self.path == "/reset_run":
@@ -795,6 +947,19 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(html)
             return
 
+        if self.path == "/thermal-settings":
+            body = (APP_DIR / "static" / "thermal-settings.html").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if self.path == "/api/thermal-settings":
+            self.send_json(200, thermal_settings_payload())
+            return
+
         if self.path == "/api/miners":
             payload = get_dashboard_snapshot()
             if payload is None:
@@ -850,6 +1015,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         return
+
+    def send_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def is_same_origin(self):
         host = self.headers.get("Host", "")

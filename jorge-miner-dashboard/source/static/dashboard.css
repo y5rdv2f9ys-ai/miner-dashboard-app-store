@@ -3015,6 +3015,29 @@ svg {
     }
 }
 
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.settings-link {
+    border: 1px solid #3f3f46;
+    border-radius: 8px;
+    padding: 7px 10px;
+    color: #e4e4e7;
+    background: #18181b;
+    font-size: 10px;
+    font-weight: 700;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.settings-link:hover {
+    border-color: #71717a;
+    background: #27272a;
+}
+
 /* Viewport balance */
 .dashboard-page {
     display: flex;
