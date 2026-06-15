@@ -2,6 +2,9 @@
 
 This repository packages the custom miner dashboard as an Umbrel app.
 
+The current manifest is an isolated migration test and uses external port
+`6056`, allowing it to run alongside the existing dashboard on `5056`.
+
 The app uses two containers built from the same image:
 
 - `dashboard` serves the UI and records miner history.
