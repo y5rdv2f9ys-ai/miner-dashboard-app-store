@@ -1,0 +1,42 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: host.docker.internal
+      APP_PORT: 5057
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  dashboard:
+    image: ghcr.io/y5rdv2f9ys-ai/miner-dashboard:1.0.0
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+      - ${APP_DATA_DIR}/../public-pool/data/database:/public-pool:ro
+    environment:
+      MINER_DASHBOARD_PORT: "5057"
+      MINER_DASHBOARD_DATA_DIR: /data
+      PUBLIC_POOL_DB_PATH: /public-pool/public-pool.sqlite
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5057/health', timeout=4)"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  thermal:
+    image: ghcr.io/y5rdv2f9ys-ai/miner-dashboard:1.0.0
+    restart: unless-stopped
+    network_mode: host
+    command: ["python", "-u", "/app/miner_thermal_mode.py"]
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    environment:
+      MINER_DASHBOARD_DATA_DIR: /data
+      THERMAL_CHECK_INTERVAL: "60"

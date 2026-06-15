@@ -1,0 +1,22 @@
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MINER_DASHBOARD_DATA_DIR=/data
+
+WORKDIR /app
+
+COPY app_v2.py discord_alerts.py miner_telemetry.py miner_thermal_mode.py ./
+COPY static ./static
+COPY miners_v2.json discord_alert_config.json ./defaults/
+COPY entrypoint.sh /usr/local/bin/miner-dashboard-entrypoint
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod +x /usr/local/bin/miner-dashboard-entrypoint
+
+EXPOSE 5057
+
+ENTRYPOINT ["miner-dashboard-entrypoint"]
+CMD ["python", "-u", "/app/app_v2.py"]

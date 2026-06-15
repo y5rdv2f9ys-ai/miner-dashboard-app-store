@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="apple-touch-icon" href="/static/icon.png">
+<link rel="icon" type="image/png" href="/static/icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Miner Dashboard V2</title>
+<link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+<div class="swipe-container" id="swipeContainer">
+<div class="swipe-track">
+
+<section class="page dashboard-page">
+    <div class="mobile-title-row">
+        <h1>Miner Dashboard</h1>
+        <div class="mobile-total" id="mobileTotal">0 TH</div>
+    </div>
+    <div class="footer" id="updated">Loading...</div>
+    <div class="mobile-summary-line" id="mobileSummary">Online -- | Health -- | Alerts --</div>
+    <div class="mobile-grid" id="minerGrid"></div>
+    <div class="legend">
+        <div class="legend-item"><div class="dot green"></div><div>STABLE</div></div>
+        <div class="legend-item"><div class="dot yellow"></div><div>HOLDING</div></div>
+        <div class="legend-item"><div class="dot orange"></div><div>COOLING</div></div>
+        <div class="legend-item"><div class="dot red"></div><div>MAX COOLING</div></div>
+    </div>
+    <div class="footer" style="margin-top:8px; line-height:1.55;">
+        <div id="thermalMgmtStatus">Thermal Management --</div>
+        <div id="minerLoggingStatus">Miner Logging --</div>
+    </div>
+    <div class="footer" style="margin-top:8px;">
+        Auto refresh every 10 seconds<br>
+        <a class="download-link" href="/download-log">Download miner log</a>
+    </div>
+    <div class="swipe-hint">Swipe left for Performance</div>
+</section>
+
+<section class="page perf-page">
+    <div class="mobile-title-row">
+        <h1>Performance</h1>
+        <div class="mobile-total">24h</div>
+    </div>
+    <div class="footer" id="perfUpdated">Building history...</div>
+    <div class="perf-table-wrap">
+        <table class="perf-table">
+            <thead><tr><th>Miner</th><th>Now<br>MHz</th><th>60m</th><th>12h</th><th>24h</th><th>ASIC/VR C</th></tr></thead>
+            <tbody id="perfRows"></tbody>
+        </table>
+    </div>
+    <div class="footer" style="margin-top:10px;">
+        CSV: history_v2.csv · TH averages are rolling · C is live
+        <div id="thermalStrip" class="thermal-strip">
+            <span class="stable">Stable 0</span>&nbsp;&nbsp;
+            <span class="holding">Holding 0</span>&nbsp;&nbsp;
+            <span class="cooling">Cooling 0</span>&nbsp;&nbsp;
+            <span class="maxcool">Max 0</span>
+        </div>
+    </div>
+    <button class="reset-all-btn" onclick="resetAllRunsLogs()">Reset Logs + Mining Runs</button>
+    <div class="swipe-hint">Swipe right for Dashboard · Swipe left for Mining</div>
+</section>
+
+<section class="page mining-page">
+    <div class="mobile-title-row">
+        <h1>Mining</h1>
+        <div class="mobile-total" id="strategyTotal">0 TH</div>
+    </div>
+    <div class="footer" id="strategyUpdated">Loading allocation...</div>
+
+    <div class="mining-allocation">
+        <div class="allocation-bar">
+            <div class="allocation-segment btc-solo" id="allocBtc"></div>
+            <div class="allocation-segment bch-solo" id="allocBch"></div>
+            <div class="allocation-segment braiins" id="allocBraiins"></div>
+        </div>
+        <div class="allocation-legend" id="allocationLegend"></div>
+    </div>
+
+    <div class="solo-grid">
+        <div class="solo-card btc-solo-card">
+            <div class="solo-head">
+                <div><span class="status-dot"></span><b>BTC SOLO</b><small id="btcSoloMiners">--</small></div>
+                <strong id="btcSoloHash">-- TH</strong>
+            </div>
+            <div class="diff-focus">
+                <div><small>SESSION BEST</small><b id="btcSessionBest">--</b></div>
+                <div><small>HISTORIC BEST</small><b id="btcHistoricBest">--</b></div>
+            </div>
+            <div class="solo-stats">
+                <span>Network <b id="btcNetworkDiff">--</b></span>
+                <span>Best / network <b id="btcBestPct">--</b></span>
+                <span>Day <b id="btcSoloDay">--</b></span>
+                <span>Month <b id="btcSoloMonth">--</b></span>
+            </div>
+        </div>
+
+        <div class="solo-card bch-solo-card">
+            <div class="solo-head">
+                <div><span class="status-dot"></span><b>BCH SOLO</b><small id="bchSoloMiners">--</small></div>
+                <strong id="bchSoloHash">-- TH</strong>
+            </div>
+            <div class="diff-focus">
+                <div><small>SESSION BEST</small><b id="bchSessionBest">--</b></div>
+                <div><small>HISTORIC BEST</small><b id="bchHistoricBest">--</b></div>
+            </div>
+            <div class="solo-stats">
+                <span>Network <b id="bchNetworkDiff">--</b></span>
+                <span>Best / network <b id="bchBestPct">--</b></span>
+                <span>Day <b id="bchSoloDay">--</b></span>
+                <span>Month <b id="bchSoloMonth">--</b></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="braiins-panel">
+        <div class="braiins-summary">
+            <div><small>BRAIINS FPPS</small><b id="braiinsHash">-- TH</b></div>
+            <div><small>POOL 60M</small><b id="braiins60m">-- TH</b></div>
+            <div><small>TODAY</small><b id="braiinsToday">-- BTC</b></div>
+            <div><small>BALANCE</small><b id="braiinsBalance">-- BTC</b></div>
+        </div>
+        <div class="braiins-workers" id="braiinsWorkerList">Loading workers...</div>
+    </div>
+
+    <div class="swipe-hint">Swipe right for Performance</div>
+</section>
+
+</div>
+</div>
+<div class="page-dots">
+    <div class="page-dot active" id="dot1"></div>
+    <div class="page-dot" id="dot2"></div>
+    <div class="page-dot" id="dot3"></div>
+</div>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

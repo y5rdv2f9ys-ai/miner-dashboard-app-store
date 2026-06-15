@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "startup_grace_seconds": 300,
+  "offline_delay_seconds": 120,
+  "online_delay_seconds": 30,
+  "low_hash_delay_seconds": 600,
+  "low_hash_percent": 70,
+  "low_hash_recovery_percent": 85,
+  "minimum_24h_samples": 60
+}

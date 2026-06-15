@@ -1,0 +1,29 @@
+manifestVersion: 1
+id: jorge-miner-dashboard
+category: bitcoin
+name: Miner Dashboard
+version: "1.0.0"
+tagline: Monitor and thermally manage your home miners
+icon: icon.png
+description: >-
+  A private dashboard for monitoring Bitaxe and NerdQAxe miners, tracking
+  mining runs and pool statistics, managing thermal frequency profiles, and
+  sending Discord alerts. All configuration and history are stored in the
+  Umbrel app data directory.
+developer: Jorge
+website: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
+dependencies: []
+repo: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
+support: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store/issues
+port: 5056
+gallery:
+  - icon.png
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+torOnly: false
+submitter: Jorge
+submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
+releaseNotes: >-
+  Initial Umbrel-native release. Migrates the dashboard and thermal manager
+  from user systemd services to Docker containers managed by Umbrel.
