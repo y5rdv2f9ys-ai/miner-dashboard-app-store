@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Miner Dashboard Test
-version: "1.1.0"
+version: "1.2.0"
 tagline: Test the Umbrel-native miner dashboard
 icon: icon.png
 description: >-

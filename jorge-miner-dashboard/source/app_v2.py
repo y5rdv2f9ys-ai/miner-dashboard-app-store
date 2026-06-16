@@ -8,6 +8,7 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import ip_address
 from urllib.request import Request, urlopen
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -141,6 +142,15 @@ def load_miners():
     with MINERS_PATH.open("r") as f:
         return json.load(f)
 
+def write_miners(miners):
+    temp_path = MINERS_PATH.with_name(f"{MINERS_PATH.name}.tmp")
+    with temp_path.open("w") as output:
+        json.dump(miners, output, indent=2)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temp_path, MINERS_PATH)
+
 THERMAL_FIELDS = (
     "base_freq",
     "hot_freq",
@@ -149,6 +159,179 @@ THERMAL_FIELDS = (
     "critical_temp",
     "recover_temp",
 )
+
+DEFAULT_THERMAL_SETTINGS = {
+    "axeos": {
+        "base_freq": 550,
+        "base_volt": 1150,
+        "hot_freq": 525,
+        "critical_freq": 500,
+        "warn_temp": 68,
+        "critical_temp": 70,
+        "recover_temp": 64,
+    },
+    "nerdos": {
+        "base_freq": 700,
+        "base_volt": 1200,
+        "hot_freq": 650,
+        "critical_freq": 560,
+        "warn_temp": 66,
+        "critical_temp": 68,
+        "recover_temp": 64,
+    },
+}
+
+def validate_miner_identity(data, existing_name=None):
+    if not isinstance(data, dict):
+        raise ValueError("Miner settings must be a JSON object")
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Miner name is required")
+    name = " ".join(name.strip().split())
+    if len(name) > 48:
+        raise ValueError("Miner name must be 48 characters or fewer")
+
+    target_name = existing_name if existing_name is not None else name
+    if not isinstance(target_name, str) or not target_name.strip():
+        raise ValueError("Original miner name is required")
+    target_name = target_name.strip()
+
+    raw_type = data.get("type")
+    if not isinstance(raw_type, str):
+        raise ValueError("Miner OS is required")
+    miner_type = raw_type.strip().lower()
+    if miner_type not in DEFAULT_THERMAL_SETTINGS:
+        raise ValueError("Miner OS must be AxeOS or NerdOS")
+
+    raw_ip = data.get("ip")
+    if not isinstance(raw_ip, str) or not raw_ip.strip():
+        raise ValueError("IP address is required")
+    ip = raw_ip.strip()
+    try:
+        parsed_ip = ip_address(ip)
+    except ValueError:
+        raise ValueError("IP address is invalid")
+    if parsed_ip.version != 4 or parsed_ip.is_unspecified or parsed_ip.is_multicast:
+        raise ValueError("IP address must be a usable IPv4 address")
+
+    pool = data.get("pool", "")
+    coin = data.get("coin", "")
+    if pool is None:
+        pool = ""
+    if coin is None:
+        coin = ""
+    if not isinstance(pool, str) or not isinstance(coin, str):
+        raise ValueError("Pool and coin must be text")
+    pool = pool.strip()
+    coin = coin.strip().upper()
+    if len(pool) > 64:
+        raise ValueError("Pool must be 64 characters or fewer")
+    if len(coin) > 16:
+        raise ValueError("Coin must be 16 characters or fewer")
+
+    return {
+        "target_name": target_name,
+        "name": name,
+        "type": miner_type,
+        "ip": ip,
+        "pool": pool,
+        "coin": coin,
+    }
+
+def miner_management_payload():
+    with CONFIG_LOCK:
+        miners = load_miners()
+
+    return {
+        "miners": [
+            {
+                "name": miner.get("name", ""),
+                "type": miner.get("type", ""),
+                "ip": miner.get("ip", ""),
+                "pool": miner.get("pool", ""),
+                "coin": miner.get("coin", ""),
+                "enabled": miner.get("enabled", True),
+            }
+            for miner in miners
+        ]
+    }
+
+def add_miner(data):
+    settings = validate_miner_identity(data)
+
+    with CONFIG_LOCK:
+        miners = load_miners()
+        if any(miner.get("name") == settings["name"] for miner in miners):
+            raise ValueError("Miner name already exists")
+        if any(miner.get("ip") == settings["ip"] for miner in miners):
+            raise ValueError("IP address already exists")
+
+        defaults = DEFAULT_THERMAL_SETTINGS[settings["type"]]
+        miner = {
+            "name": settings["name"],
+            "type": settings["type"],
+            "ip": settings["ip"],
+            "pool": settings["pool"],
+            "coin": settings["coin"],
+            "enabled": False,
+            **defaults,
+        }
+        miners.append(miner)
+        write_miners(miners)
+
+    COLLECTOR_WAKE.set()
+    return miner
+
+def update_miner(data):
+    settings = validate_miner_identity(data, data.get("original_name"))
+
+    with CONFIG_LOCK:
+        miners = load_miners()
+        matches = [miner for miner in miners if miner.get("name") == settings["target_name"]]
+        if len(matches) != 1:
+            raise LookupError("Miner was not found or its name is not unique")
+        if any(
+            miner is not matches[0] and miner.get("name") == settings["name"]
+            for miner in miners
+        ):
+            raise ValueError("Miner name already exists")
+        if any(
+            miner is not matches[0] and miner.get("ip") == settings["ip"]
+            for miner in miners
+        ):
+            raise ValueError("IP address already exists")
+
+        miner = matches[0]
+        miner["name"] = settings["name"]
+        miner["type"] = settings["type"]
+        miner["ip"] = settings["ip"]
+        miner["pool"] = settings["pool"]
+        miner["coin"] = settings["coin"]
+        write_miners(miners)
+
+    COLLECTOR_WAKE.set()
+    return miner
+
+def delete_miner(data):
+    if not isinstance(data, dict):
+        raise ValueError("Miner settings must be a JSON object")
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Miner name is required")
+    name = name.strip()
+
+    with CONFIG_LOCK:
+        miners = load_miners()
+        remaining = [miner for miner in miners if miner.get("name") != name]
+        if len(remaining) == len(miners):
+            raise LookupError("Miner was not found")
+        if len(remaining) != len(miners) - 1:
+            raise LookupError("Miner name is not unique")
+        write_miners(remaining)
+
+    COLLECTOR_WAKE.set()
+    return {"name": name}
 
 def validate_thermal_settings(data):
     if not isinstance(data, dict):
@@ -216,13 +399,7 @@ def save_thermal_settings(data):
         for field in THERMAL_FIELDS:
             miner[field] = settings[field]
 
-        temp_path = MINERS_PATH.with_name(f"{MINERS_PATH.name}.tmp")
-        with temp_path.open("w") as output:
-            json.dump(miners, output, indent=2)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temp_path, MINERS_PATH)
+        write_miners(miners)
 
     COLLECTOR_WAKE.set()
     return miner
@@ -805,6 +982,9 @@ class Handler(BaseHTTPRequestHandler):
                 "/reset_run",
                 "/reset_all_runs_logs",
                 "/api/thermal-settings",
+                "/api/miner-management/add",
+                "/api/miner-management/update",
+                "/api/miner-management/delete",
             )
             if self.path in protected_paths and not self.is_same_origin():
                 self.send_response(403)
@@ -842,6 +1022,39 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     },
                 )
+                return
+
+            if self.path.startswith("/api/miner-management/"):
+                length = int(self.headers.get("Content-Length", 0))
+                if length <= 0 or length > 16384:
+                    self.send_json(400, {"ok": False, "error": "Invalid request size"})
+                    return
+
+                try:
+                    data = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self.send_json(400, {"ok": False, "error": "Invalid JSON body"})
+                    return
+
+                try:
+                    if self.path == "/api/miner-management/add":
+                        miner = add_miner(data)
+                    elif self.path == "/api/miner-management/update":
+                        miner = update_miner(data)
+                    elif self.path == "/api/miner-management/delete":
+                        miner = delete_miner(data)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+                except ValueError as error:
+                    self.send_json(400, {"ok": False, "error": str(error)})
+                    return
+                except LookupError as error:
+                    self.send_json(404, {"ok": False, "error": str(error)})
+                    return
+
+                self.send_json(200, {"ok": True, "miner": miner})
                 return
 
             if self.path == "/reset_run":
@@ -956,8 +1169,21 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if self.path == "/miners":
+            body = (APP_DIR / "static" / "miners.html").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path == "/api/thermal-settings":
             self.send_json(200, thermal_settings_payload())
+            return
+
+        if self.path == "/api/miner-management":
+            self.send_json(200, miner_management_payload())
             return
 
         if self.path == "/api/miners":

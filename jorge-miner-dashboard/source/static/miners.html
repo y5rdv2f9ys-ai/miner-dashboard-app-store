@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="apple-touch-icon" href="/static/icon.png">
+<link rel="icon" type="image/png" href="/static/icon.png">
+<meta name="theme-color" content="#09090b">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Miner Management</title>
+<link rel="stylesheet" href="/static/miners.css">
+</head>
+<body>
+<main class="settings-page">
+    <header>
+        <div>
+            <p class="eyebrow">MINER DASHBOARD</p>
+            <h1>Miners</h1>
+            <p class="subtitle">Add, edit, or remove configured miners.</p>
+        </div>
+        <nav class="header-links">
+            <a class="back-link" href="/thermal-settings">Thermal Settings</a>
+            <a class="back-link" href="/">Dashboard</a>
+        </nav>
+    </header>
+
+    <div id="message" class="message" hidden></div>
+
+    <section class="add-panel">
+        <h2>Add Miner</h2>
+        <form id="addMinerForm" class="miner-form open-form">
+            <div class="settings-grid">
+                <label>Miner name
+                    <input name="name" type="text" maxlength="48" required>
+                </label>
+                <label>IP address
+                    <input name="ip" type="text" inputmode="decimal" placeholder="192.168.1.115" required>
+                </label>
+                <label>Miner OS
+                    <select name="type" required>
+                        <option value="axeos">AxeOS</option>
+                        <option value="nerdos">NerdOS</option>
+                    </select>
+                </label>
+                <label>Pool
+                    <input name="pool" type="text" maxlength="64">
+                </label>
+                <label>Coin
+                    <input name="coin" type="text" maxlength="16">
+                </label>
+            </div>
+            <div class="form-actions">
+                <span class="save-note">Thermal management starts disabled.</span>
+                <button class="save-button" type="submit">Add Miner</button>
+            </div>
+        </form>
+    </section>
+
+    <div id="minerList" class="miner-list">
+        <div class="loading">Loading miners...</div>
+    </div>
+</main>
+<script src="/static/miners.js"></script>
+</body>
+</html>

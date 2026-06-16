@@ -107,7 +107,7 @@
   {
     "name": "NOctaxe",
     "type": "nerdos",
-    "ip": "192.168.1.116",
+    "ip": "192.168.1.115",
     "pool": "Braiins",
     "coin": "BTC",
     "expected_th": 9.10,

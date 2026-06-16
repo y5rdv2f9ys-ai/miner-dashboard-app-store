@@ -59,15 +59,21 @@ button:disabled { opacity: .5; cursor: wait; }
 .message.success { border-color: #166534; color: #86efac; }
 .message.error { border-color: #991b1b; color: #fca5a5; }
 
-.miner-list { display: grid; gap: 14px; }
-.loading { color: #a1a1aa; padding: 20px 0; }
-
-.miner-card {
+.add-panel, .miner-card {
     border: 1px solid #27272a;
     border-radius: 14px;
     background: rgba(24, 24, 27, .92);
     overflow: hidden;
 }
+
+.add-panel {
+    margin-bottom: 16px;
+    padding: 17px;
+}
+.add-panel h2 { margin: 0 0 14px; font-size: 17px; }
+
+.miner-list { display: grid; gap: 14px; }
+.loading { color: #a1a1aa; padding: 20px 0; }
 
 .miner-summary {
     display: flex;
@@ -83,29 +89,14 @@ button:disabled { opacity: .5; cursor: wait; }
 
 .miner-summary h2 { margin: 0 0 4px; font-size: 17px; }
 .miner-meta { color: #a1a1aa; font-size: 11px; }
-.live-state { text-align: right; font-size: 12px; }
-.live-state b { display: block; color: #fafafa; font-size: 14px; }
-.live-state span { color: #a1a1aa; }
+.thermal-state { text-align: right; color: #a1a1aa; font-size: 12px; }
 
 .miner-form {
     display: none;
     padding: 17px;
     border-top: 1px solid #27272a;
 }
-.miner-card.open .miner-form { display: block; }
-
-.enable-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 14px;
-    margin-bottom: 18px;
-    padding-bottom: 14px;
-    border-bottom: 1px solid #27272a;
-}
-.enable-row strong { display: block; font-size: 13px; }
-.enable-row small { color: #a1a1aa; }
-.enable-row input { width: 20px; height: 20px; accent-color: #22c55e; }
+.miner-card.open .miner-form, .open-form { display: block; }
 
 .settings-grid {
     display: grid;
@@ -114,8 +105,7 @@ button:disabled { opacity: .5; cursor: wait; }
 }
 
 label { display: grid; gap: 6px; color: #d4d4d8; font-size: 11px; font-weight: 700; }
-label small { color: #71717a; font-size: 9px; font-weight: 500; }
-input[type="number"] {
+input, select {
     width: 100%;
     border: 1px solid #3f3f46;
     border-radius: 8px;
@@ -125,7 +115,7 @@ input[type="number"] {
     font: inherit;
     font-size: 14px;
 }
-input:focus { outline: 2px solid #2563eb; border-color: transparent; }
+input:focus, select:focus { outline: 2px solid #2563eb; border-color: transparent; }
 
 .form-actions {
     display: flex;
@@ -137,11 +127,12 @@ input:focus { outline: 2px solid #2563eb; border-color: transparent; }
 .save-note { margin-right: auto; color: #71717a; font-size: 10px; }
 .save-button { border-color: #166534; background: #14532d; }
 .save-button:hover { background: #166534; }
+.delete-button { border-color: #7f1d1d; background: #450a0a; }
+.delete-button:hover { background: #7f1d1d; }
 
 @media (max-width: 700px) {
     .settings-page { width: min(100% - 20px, 1040px); padding-top: 20px; }
-    header { align-items: center; }
-    .subtitle { max-width: 230px; }
+    header { align-items: flex-start; }
     .header-links { max-width: 180px; }
     .back-link { padding: 9px 10px; white-space: nowrap; }
     .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -152,4 +143,6 @@ input:focus { outline: 2px solid #2563eb; border-color: transparent; }
     .header-links { justify-content: flex-start; margin-top: 15px; }
     .settings-grid { grid-template-columns: 1fr; }
     .miner-summary { align-items: flex-start; }
+    .form-actions { align-items: stretch; flex-direction: column; }
+    .save-note { margin-right: 0; }
 }
