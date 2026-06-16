@@ -2,9 +2,9 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Miner Dashboard Test
-version: "1.2.1"
+version: "1.2.2"
 tagline: Test the Umbrel-native miner dashboard
-icon: dashboard-icon.png
+icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
   A private dashboard for monitoring Bitaxe and NerdQAxe miners, tracking
   mining runs and pool statistics, managing thermal frequency profiles, and
@@ -17,7 +17,7 @@ repo: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 support: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store/issues
 port: 6056
 gallery:
-  - dashboard-icon.png
+  - https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 path: ""
 defaultUsername: ""
 defaultPassword: ""
