@@ -210,6 +210,19 @@ class DiscordAlertTests(unittest.TestCase):
             ["Miner online: BitaxeBTC"],
         )
 
+    def test_send_test_uses_configured_sender(self):
+        self.assertTrue(self.manager.send_test())
+        self.assertEqual(
+            self.sent,
+            [
+                (
+                    "Miner Manager test",
+                    "Discord alerts are configured and the miner dashboard is running.",
+                    0x3498DB,
+                )
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

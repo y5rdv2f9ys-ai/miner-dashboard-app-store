@@ -41,6 +41,10 @@
         Auto refresh every 10 seconds<br>
         <a class="download-link" href="/download-log">Download miner log</a>
     </div>
+    <div class="dashboard-actions">
+        <button class="discord-test-btn" type="button" onclick="sendDiscordTest()">Send Discord Test</button>
+        <span class="action-status" id="discordTestStatus"></span>
+    </div>
     <div class="swipe-hint">Swipe left for Performance</div>
 </section>
 
@@ -65,7 +69,7 @@
             <span class="maxcool">Max 0</span>
         </div>
     </div>
-    <button class="reset-all-btn" onclick="resetAllRunsLogs()">Reset Logs + Mining Runs</button>
+    <button class="reset-all-btn" onclick="resetAllRunsLogs()">Clear 24h History + Thermal Log</button>
     <div class="swipe-hint">Swipe right for Dashboard · Swipe left for Mining</div>
 </section>
 

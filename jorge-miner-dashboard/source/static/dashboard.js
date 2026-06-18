@@ -279,9 +279,36 @@ async function loadPerformance() {
 }
 
 async function resetAllRunsLogs() {
-    if (!confirm('Reset all mining runs, dashboard history, and thermal log from this point?')) return;
-    await fetch('/reset_all_runs_logs', {method: 'POST'});
+    if (!confirm('Clear performance history, mining run counters, and the thermal log? Miner settings, thermal settings, Discord config, and live current odds will not be changed.')) return;
+    const response = await fetch('/reset_all_runs_logs', {method: 'POST'});
+    if (!response.ok) {
+        alert('Could not clear history and thermal log.');
+        return;
+    }
     location.reload();
+}
+
+async function sendDiscordTest() {
+    const button = document.querySelector('.discord-test-btn');
+    const status = el('discordTestStatus');
+    if (button) button.disabled = true;
+    if (status) status.textContent = 'Sending...';
+
+    try {
+        const response = await fetch('/api/discord/test', {method: 'POST'});
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+            throw new Error(data.error || 'Discord test failed');
+        }
+        if (status) status.textContent = 'Sent';
+    } catch (error) {
+        if (status) status.textContent = 'Failed';
+    } finally {
+        if (button) button.disabled = false;
+        setTimeout(() => {
+            if (status) status.textContent = '';
+        }, 5000);
+    }
 }
 
 async function loadData() {

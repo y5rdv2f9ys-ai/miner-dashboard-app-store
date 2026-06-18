@@ -981,6 +981,7 @@ class Handler(BaseHTTPRequestHandler):
             protected_paths = (
                 "/reset_run",
                 "/reset_all_runs_logs",
+                "/api/discord/test",
                 "/api/thermal-settings",
                 "/api/miner-management/add",
                 "/api/miner-management/update",
@@ -1111,6 +1112,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": True, "reset_all": True}).encode())
+                return
+
+            if self.path == "/api/discord/test":
+                if ALERT_MANAGER.send_test():
+                    self.send_json(200, {"ok": True})
+                else:
+                    self.send_json(
+                        502,
+                        {
+                            "ok": False,
+                            "error": "Discord test alert could not be sent",
+                        },
+                    )
                 return
 
             self.send_response(404)

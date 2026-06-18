@@ -1889,7 +1889,7 @@ svg {
 }
 
 
-/* PAGE 3 RESET ALL BUTTON */
+/* PAGE 2 RESET ALL BUTTON */
 .reset-all-btn {
     width: 100%;
     margin: 18px auto 0 auto;
@@ -1904,6 +1904,36 @@ svg {
 
 .reset-all-btn:active {
     transform: scale(0.98);
+}
+
+.dashboard-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 10px;
+    min-height: 34px;
+}
+
+.discord-test-btn {
+    padding: 8px 12px;
+    border: 1px solid rgba(96,165,250,0.45);
+    border-radius: 8px;
+    background: rgba(37,99,235,0.18);
+    color: #bfdbfe;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.discord-test-btn:disabled {
+    cursor: wait;
+    opacity: 0.65;
+}
+
+.action-status {
+    min-width: 42px;
+    color: #aaa;
+    font-size: 12px;
 }
 
 
