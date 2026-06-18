@@ -78,14 +78,14 @@ h1 {
 .mobile-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
+    gap: 12px;
     margin: 18px auto 0 auto;
 }
 
 .mobile-card {
     background: #1c1c1c;
     border-radius: 12px;
-    padding: 7px 5px;
+    padding: 9px 6px;
     border: 2px solid #333;
     text-align: center;
 }
@@ -124,11 +124,17 @@ h1 {
 }
 
 .status {
-    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 6px;
     border-radius: 8px;
-    padding: 4px;
+    padding: 5px 3px;
+    min-height: 26px;
     font-size: 10px;
     font-weight: bold;
+    line-height: 1;
+    white-space: nowrap;
 }
 
 .status.STABLE { background: #14532d; }
@@ -3109,11 +3115,11 @@ svg {
 }
 
 .dashboard-page .mobile-grid {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     width: 100%;
     min-height: 300px;
-    max-height: 390px;
-    grid-auto-rows: minmax(132px, 1fr);
+    max-height: none;
+    grid-auto-rows: minmax(148px, auto);
     margin-top: 18px;
 }
 
@@ -3121,7 +3127,18 @@ svg {
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    min-height: 132px;
+    min-height: 148px;
+}
+
+@media (max-width: 520px) {
+    .dashboard-page .mobile-grid {
+        gap: 18px 10px;
+        grid-auto-rows: minmax(172px, auto);
+    }
+
+    .dashboard-page .mobile-card {
+        min-height: 172px;
+    }
 }
 
 .dashboard-page .legend {
@@ -3133,8 +3150,8 @@ svg {
 }
 
 .dashboard-page .swipe-hint {
-    margin-top: auto;
-    padding-top: 12px;
+    margin-top: 8px;
+    padding-top: 0;
 }
 
 .perf-page {
