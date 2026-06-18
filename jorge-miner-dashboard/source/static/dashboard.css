@@ -59,6 +59,8 @@ h1 {
 .mobile-total {
     font-size: 24px;
     font-weight: bold;
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 .mobile-summary-line {
@@ -1908,20 +1910,21 @@ svg {
 
 .dashboard-actions {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
     margin-top: 10px;
-    min-height: 34px;
+    min-height: 50px;
 }
 
 .discord-test-btn {
-    padding: 8px 12px;
-    border: 1px solid rgba(96,165,250,0.45);
-    border-radius: 8px;
-    background: rgba(37,99,235,0.18);
+    width: 100%;
+    padding: 10px 0;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    background: rgba(255,255,255,0.05);
     color: #bfdbfe;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 800;
 }
 
@@ -1931,9 +1934,11 @@ svg {
 }
 
 .action-status {
-    min-width: 42px;
+    min-width: 0;
     color: #aaa;
     font-size: 12px;
+    text-align: center;
+    white-space: nowrap;
 }
 
 
@@ -3049,6 +3054,9 @@ svg {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
+    flex: 0 1 auto;
+    justify-content: flex-end;
 }
 
 .settings-link {

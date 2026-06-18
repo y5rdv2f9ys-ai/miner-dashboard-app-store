@@ -1145,6 +1145,21 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if self.path in ("/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"):
+            try:
+                icon = APP_DIR / "static" / "apple-touch-icon.png"
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(icon.read_bytes())
+                return
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(str(e).encode())
+                return
+
         if self.path.startswith("/static/icon"):
             try:
                 icon = APP_DIR / "static" / "icon.png"
