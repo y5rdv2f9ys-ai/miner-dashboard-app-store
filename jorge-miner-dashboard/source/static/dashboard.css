@@ -481,11 +481,11 @@ svg {
 
 
 .thermal-strip {
-    margin: 14px 0 18px 0;
+    margin: 8px 0 8px 0;
     text-align: center;
     font-size: 15px;
     color: #d0d0d0;
-    line-height: 1.8;
+    line-height: 1.4;
 }
 
 .thermal-strip .stable { color: #4ade80; font-weight: 600; }
@@ -1894,7 +1894,7 @@ svg {
 /* PAGE 2 RESET ALL BUTTON */
 .reset-all-btn {
     width: 100%;
-    margin: 18px auto 0 auto;
+    margin: 8px auto 0 auto;
     padding: 10px 0;
     border-radius: 14px;
     border: 1px solid rgba(255,255,255,0.12);
@@ -3138,11 +3138,18 @@ svg {
 }
 
 .perf-page {
+    display: flex;
+    flex-direction: column;
     padding-top: 24px;
 }
 
 .perf-page .perf-table-wrap {
     margin-top: 18px !important;
+}
+
+.perf-page .swipe-hint {
+    margin-top: auto;
+    padding-top: 10px;
 }
 
 .mining-page {
@@ -3209,6 +3216,10 @@ svg {
 
     .perf-page .perf-table-wrap {
         margin-top: 24px !important;
+    }
+
+    .perf-page .swipe-hint {
+        padding-top: 12px;
     }
 
     .mining-page {

@@ -9,7 +9,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   dashboard:
-    image: ghcr.io/y5rdv2f9ys-ai/miner-dashboard:1.2.8
+    image: ghcr.io/y5rdv2f9ys-ai/miner-dashboard:1.2.9
     restart: unless-stopped
     network_mode: host
     volumes:
@@ -31,7 +31,7 @@ services:
       retries: 3
 
   thermal:
-    image: ghcr.io/y5rdv2f9ys-ai/miner-dashboard:1.2.8
+    image: ghcr.io/y5rdv2f9ys-ai/miner-dashboard:1.2.9
     restart: unless-stopped
     network_mode: host
     command: ["python", "-u", "/app/miner_thermal_mode.py"]
