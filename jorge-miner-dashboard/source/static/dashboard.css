@@ -3084,6 +3084,30 @@ svg {
     overflow-y: auto;
 }
 
+.dashboard-page .mobile-title-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px 12px;
+}
+
+.dashboard-page h1 {
+    line-height: 1.05;
+}
+
+.dashboard-page .header-actions {
+    display: grid;
+    grid-template-columns: auto auto;
+    justify-content: end;
+    gap: 7px;
+}
+
+.dashboard-page .header-actions .mobile-total {
+    grid-column: 1 / -1;
+    justify-self: end;
+    line-height: 1.05;
+}
+
 .dashboard-page .mobile-grid {
     flex: 1 1 auto;
     width: 100%;
