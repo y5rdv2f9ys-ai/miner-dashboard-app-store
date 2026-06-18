@@ -59,6 +59,8 @@ h1 {
 .mobile-total {
     font-size: 24px;
     font-weight: bold;
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 .mobile-summary-line {
@@ -1907,7 +1909,8 @@ svg {
 }
 
 .dashboard-actions {
-    display: flex;
+    display: grid;
+    grid-template-columns: 72px auto 72px;
     align-items: center;
     justify-content: center;
     gap: 10px;
@@ -1931,9 +1934,11 @@ svg {
 }
 
 .action-status {
-    min-width: 42px;
+    min-width: 0;
     color: #aaa;
     font-size: 12px;
+    text-align: left;
+    white-space: nowrap;
 }
 
 
@@ -3049,6 +3054,9 @@ svg {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
+    flex: 0 1 auto;
+    justify-content: flex-end;
 }
 
 .settings-link {
