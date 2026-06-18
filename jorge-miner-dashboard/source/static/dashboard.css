@@ -3081,7 +3081,7 @@ svg {
     display: flex;
     flex-direction: column;
     padding-top: 18px;
-    overflow-y: hidden;
+    overflow-y: auto;
 }
 
 .dashboard-page .mobile-grid {
@@ -3089,22 +3089,23 @@ svg {
     width: 100%;
     min-height: 300px;
     max-height: 390px;
-    grid-auto-rows: minmax(0, 1fr);
-    margin-top: 30px;
+    grid-auto-rows: minmax(132px, 1fr);
+    margin-top: 18px;
 }
 
 .dashboard-page .mobile-card {
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: space-between;
+    min-height: 132px;
 }
 
 .dashboard-page .legend {
-    margin-top: 18px;
+    margin-top: 12px;
 }
 
 .dashboard-page .legend + .footer {
-    margin-top: 18px !important;
+    margin-top: 12px !important;
 }
 
 .dashboard-page .swipe-hint {
@@ -3167,15 +3168,15 @@ svg {
     .dashboard-page .mobile-grid {
         min-height: 340px;
         max-height: 430px;
-        margin-top: 38px;
-    }
-
-    .dashboard-page .legend {
         margin-top: 24px;
     }
 
+    .dashboard-page .legend {
+        margin-top: 16px;
+    }
+
     .dashboard-page .legend + .footer {
-        margin-top: 24px !important;
+        margin-top: 16px !important;
     }
 
     .perf-page {
