@@ -25,9 +25,23 @@
 
     <div id="message" class="message" hidden></div>
 
+    <section class="scan-panel">
+        <div>
+            <h2>Network Discovery</h2>
+            <p>Scan the LAN for miners. Known miners can have changed IPs updated automatically; new miners stay pending until you add them.</p>
+        </div>
+        <button id="scanButton" class="scan-button" type="button">Scan Now</button>
+    </section>
+
+    <section id="pendingPanel" class="pending-panel" hidden>
+        <h2>Pending Discovered Miners</h2>
+        <div id="pendingList" class="pending-list"></div>
+    </section>
+
     <section class="add-panel">
         <h2>Add Miner</h2>
         <form id="addMinerForm" class="miner-form open-form">
+            <input name="identity_json" type="hidden">
             <div class="settings-grid">
                 <label>Miner name
                     <input name="name" type="text" maxlength="48" required>

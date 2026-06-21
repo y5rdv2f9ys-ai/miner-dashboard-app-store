@@ -1,6 +1,9 @@
 const list = document.getElementById('minerList');
 const message = document.getElementById('message');
 const addForm = document.getElementById('addMinerForm');
+const scanButton = document.getElementById('scanButton');
+const pendingPanel = document.getElementById('pendingPanel');
+const pendingList = document.getElementById('pendingList');
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -37,7 +40,16 @@ function osSelect(value) {
 
 function formPayload(form) {
     const data = Object.fromEntries(new FormData(form).entries());
-    return {
+    let identity = {};
+    if (data.identity_json) {
+        try {
+            const parsed = JSON.parse(data.identity_json);
+            if (parsed && typeof parsed === 'object') identity = parsed;
+        } catch (_) {
+            identity = {};
+        }
+    }
+    const payload = {
         original_name: data.original_name,
         name: data.name,
         ip: data.ip,
@@ -45,6 +57,17 @@ function formPayload(form) {
         pool: data.pool || '',
         coin: data.coin || '',
     };
+    if (Object.keys(identity).length) payload.identity = identity;
+    return payload;
+}
+
+function identitySummary(identity = {}) {
+    const parts = [];
+    if (identity.mac) parts.push(`MAC ${identity.mac}`);
+    if (identity.hostname) parts.push(identity.hostname);
+    if (identity.model) parts.push(identity.model);
+    if (identity.version) parts.push(identity.version);
+    return parts.join(' · ') || 'No stable identity reported';
 }
 
 function renderMiner(miner) {
@@ -60,6 +83,7 @@ function renderMiner(miner) {
         </button>
         <form class="miner-form">
             <input type="hidden" name="original_name" value="${escapeHtml(miner.name)}">
+            <input type="hidden" name="identity_json" value="${escapeHtml(JSON.stringify(miner.identity || {}))}">
             <div class="settings-grid">
                 ${textInput('name', 'Miner name', miner.name, 'maxlength="48" required')}
                 ${textInput('ip', 'IP address', miner.ip, 'inputmode="decimal" required')}
@@ -68,7 +92,7 @@ function renderMiner(miner) {
                 ${textInput('coin', 'Coin', miner.coin, 'maxlength="16"')}
             </div>
             <div class="form-actions">
-                <span class="save-note">Thermal settings stay on the Thermal Settings page.</span>
+                <span class="save-note">${escapeHtml(identitySummary(miner.identity))}</span>
                 <button class="delete-button" type="button">Delete</button>
                 <button class="save-button" type="submit">Save Miner</button>
             </div>
@@ -83,6 +107,40 @@ function renderMiner(miner) {
     card.querySelector('form').addEventListener('submit', saveMiner);
     card.querySelector('.delete-button').addEventListener('click', () => deleteMiner(miner.name));
     return card;
+}
+
+function fillAddForm(miner) {
+    addForm.elements.name.value = miner.name || '';
+    addForm.elements.ip.value = miner.ip || '';
+    addForm.elements.type.value = miner.type || 'axeos';
+    addForm.elements.pool.value = miner.pool || '';
+    addForm.elements.coin.value = miner.coin || '';
+    addForm.elements.identity_json.value = JSON.stringify(miner.identity || {});
+    addForm.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function renderPendingMiner(miner) {
+    const item = document.createElement('article');
+    item.className = 'pending-card';
+    item.innerHTML = `
+        <div>
+            <h3>${escapeHtml(miner.name || 'Discovered miner')}</h3>
+            <div class="miner-meta">${escapeHtml((miner.type || 'unknown').toUpperCase())} · ${escapeHtml(miner.ip)}</div>
+            <p>${escapeHtml(identitySummary(miner.identity))}</p>
+        </div>
+        <button type="button">Use in Add Form</button>`;
+    item.querySelector('button').addEventListener('click', () => fillAddForm(miner));
+    return item;
+}
+
+function renderPending(pending) {
+    pendingList.innerHTML = '';
+    if (!pending.length) {
+        pendingPanel.hidden = true;
+        return;
+    }
+    pending.forEach(miner => pendingList.appendChild(renderPendingMiner(miner)));
+    pendingPanel.hidden = false;
 }
 
 async function postJson(path, payload) {
@@ -107,6 +165,7 @@ async function addMiner(event) {
     try {
         await postJson('/api/miner-management/add', payload);
         addForm.reset();
+        addForm.elements.identity_json.value = '';
         showMessage(`${payload.name} added. Thermal management is disabled.`, 'success');
         await loadMiners();
     } catch (error) {
@@ -114,6 +173,27 @@ async function addMiner(event) {
     } finally {
         button.disabled = false;
         button.textContent = 'Add Miner';
+    }
+}
+
+async function scanMiners() {
+    scanButton.disabled = true;
+    scanButton.textContent = 'Scanning...';
+    try {
+        const result = await postJson('/api/miner-discovery/scan', {});
+        const updated = result.updated || [];
+        const pending = result.pending || [];
+        renderPending(pending);
+        let text = `Scan complete: ${result.discovered || 0} miner(s) found.`;
+        if (updated.length) text += ` Updated ${updated.length} changed IP(s).`;
+        if (pending.length) text += ` ${pending.length} new miner(s) pending.`;
+        showMessage(text, 'success');
+        await loadMiners();
+    } catch (error) {
+        showMessage(error.message, 'error');
+    } finally {
+        scanButton.disabled = false;
+        scanButton.textContent = 'Scan Now';
     }
 }
 
@@ -156,6 +236,7 @@ async function loadMiners() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `Load failed (${response.status})`);
         list.innerHTML = '';
+        renderPending(data.pending || []);
         data.miners.forEach(miner => list.appendChild(renderMiner(miner)));
         if (!data.miners.length) list.innerHTML = '<div class="loading">No configured miners found.</div>';
     } catch (error) {
@@ -165,4 +246,5 @@ async function loadMiners() {
 }
 
 addForm.addEventListener('submit', addMiner);
+scanButton.addEventListener('click', scanMiners);
 loadMiners();

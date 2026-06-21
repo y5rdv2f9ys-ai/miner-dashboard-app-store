@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Miner Dashboard Test
-version: "1.2.12"
+version: "1.2.13"
 tagline: Test the Umbrel-native miner dashboard
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
@@ -25,4 +25,5 @@ torOnly: false
 submitter: Jorge
 submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 releaseNotes: >-
-  Adds the compact page 3 status API and removes the completed migration path.
+  Adds startup miner discovery, manual Scan Now, and a token-protected public
+  page 3 status endpoint.

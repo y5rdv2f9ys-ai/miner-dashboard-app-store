@@ -6,9 +6,12 @@ import os
 import math
 import time
 import threading
+import secrets
+import socket
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -42,6 +45,8 @@ DASHBOARD_SNAPSHOT = None
 
 RUNS_PATH = DATA_DIR / "active_mining_runs.json"
 MINERS_PATH = DATA_DIR / "miners_v2.json"
+PENDING_DISCOVERY_PATH = DATA_DIR / "pending_discovered_miners.json"
+PAGE3_PUBLIC_TOKEN_PATH = DATA_DIR / ".page3_public_token"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
 BTC_BLOCKS_DB = Path(
@@ -151,6 +156,262 @@ def write_miners(miners):
         os.fsync(output.fileno())
     os.replace(temp_path, MINERS_PATH)
 
+def write_json_file(path, payload):
+    temp_path = path.with_name(f"{path.name}.tmp")
+    with temp_path.open("w") as output:
+        json.dump(payload, output, indent=2)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temp_path, path)
+
+def load_pending_discovery():
+    try:
+        with PENDING_DISCOVERY_PATH.open("r") as f:
+            pending = json.load(f)
+        return pending if isinstance(pending, list) else []
+    except Exception:
+        return []
+
+def ensure_page3_public_token():
+    try:
+        token = PAGE3_PUBLIC_TOKEN_PATH.read_text().strip()
+        if token:
+            return token
+    except FileNotFoundError:
+        pass
+    token = secrets.token_urlsafe(32)
+    PAGE3_PUBLIC_TOKEN_PATH.write_text(f"{token}\n")
+    try:
+        PAGE3_PUBLIC_TOKEN_PATH.chmod(0o600)
+    except Exception:
+        pass
+    return token
+
+def read_page3_public_token():
+    try:
+        return PAGE3_PUBLIC_TOKEN_PATH.read_text().strip()
+    except Exception:
+        return ""
+
+def normalize_mac(value):
+    if not isinstance(value, str):
+        return ""
+    chars = "".join(char.lower() for char in value if char.isalnum())
+    if len(chars) != 12 or any(char not in "0123456789abcdef" for char in chars):
+        return ""
+    return ":".join(chars[index:index + 2] for index in range(0, 12, 2))
+
+def find_first_key(payload, candidates):
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key.lower() in candidates and value not in (None, ""):
+                return value
+        for value in payload.values():
+            found = find_first_key(value, candidates)
+            if found not in (None, ""):
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = find_first_key(value, candidates)
+            if found not in (None, ""):
+                return found
+    return None
+
+def extract_miner_identity(info):
+    mac_keys = {
+        "mac",
+        "macaddr",
+        "macaddress",
+        "mac_address",
+        "wifimac",
+        "wifi_mac",
+        "ethmac",
+        "eth_mac",
+        "sta_mac",
+        "ap_mac",
+    }
+    hostname_keys = {"hostname", "host", "name", "device", "devicename", "device_name"}
+    model_keys = {"model", "devicemodel", "device_model", "board", "asicmodel", "asic_model"}
+    version_keys = {"version", "fwversion", "firmware", "firmwareversion", "firmware_version"}
+
+    mac = normalize_mac(find_first_key(info, mac_keys))
+    hostname = find_first_key(info, hostname_keys)
+    model = find_first_key(info, model_keys)
+    version = find_first_key(info, version_keys)
+
+    return {
+        "mac": mac,
+        "hostname": str(hostname).strip()[:80] if hostname not in (None, "") else "",
+        "model": str(model).strip()[:80] if model not in (None, "") else "",
+        "version": str(version).strip()[:80] if version not in (None, "") else "",
+    }
+
+def detect_miner_type(info):
+    text = json.dumps(info, sort_keys=True).lower()
+    if "nerd" in text or "nqaxe" in text or "noctaxe" in text:
+        return "nerdos"
+    return "axeos"
+
+def default_discovery_cidr():
+    configured = os.environ.get("MINER_DISCOVERY_CIDR", "").strip()
+    if configured:
+        return configured
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("1.1.1.1", 80))
+            local_ip = sock.getsockname()[0]
+        parts = local_ip.split(".")
+        if len(parts) == 4:
+            return ".".join(parts[:3] + ["0"]) + "/24"
+    except Exception:
+        pass
+    return "192.168.1.0/24"
+
+def probe_miner(ip):
+    url = f"http://{ip}/api/system/info"
+    try:
+        with urlopen(url, timeout=0.5) as response:
+            if response.status != 200:
+                return None
+            body = response.read(65536)
+        info = json.loads(body.decode("utf-8"))
+        if not isinstance(info, dict):
+            return None
+        identity = extract_miner_identity(info)
+        return {
+            "ip": str(ip),
+            "type": detect_miner_type(info),
+            "identity": identity,
+        }
+    except Exception:
+        return None
+
+def scan_for_miners(cidr=None):
+    cidr = cidr or default_discovery_cidr()
+    network = ip_network(cidr, strict=False)
+    if network.version != 4:
+        raise ValueError("Discovery CIDR must be IPv4")
+    hosts = list(network.hosts())
+    if len(hosts) > 1024:
+        raise ValueError("Discovery CIDR is too large")
+
+    discovered = []
+    with ThreadPoolExecutor(max_workers=64) as executor:
+        for result in executor.map(probe_miner, hosts):
+            if result:
+                discovered.append(result)
+    discovered.sort(key=lambda item: tuple(int(part) for part in item["ip"].split(".")))
+    return discovered
+
+def miner_identity_mac(miner):
+    identity = miner.get("identity")
+    if isinstance(identity, dict):
+        mac = normalize_mac(identity.get("mac"))
+        if mac:
+            return mac
+    return normalize_mac(miner.get("mac"))
+
+def merge_identity(miner, discovered):
+    identity = dict(miner.get("identity") or {})
+    found = discovered.get("identity") or {}
+    changed = False
+    for key in ("mac", "hostname", "model", "version"):
+        value = found.get(key)
+        if value and identity.get(key) != value:
+            identity[key] = value
+            changed = True
+    if identity and miner.get("identity") != identity:
+        miner["identity"] = identity
+        changed = True
+    return changed
+
+def discovery_display_name(item):
+    identity = item.get("identity") or {}
+    return identity.get("hostname") or identity.get("model") or f"Miner at {item.get('ip')}"
+
+def reconcile_discovered_miners(discovered):
+    updates = []
+    known = []
+    pending = []
+
+    with CONFIG_LOCK:
+        miners = load_miners()
+        by_mac = {
+            miner_identity_mac(miner): miner
+            for miner in miners
+            if miner_identity_mac(miner)
+        }
+        by_ip = {miner.get("ip"): miner for miner in miners if miner.get("ip")}
+        changed = False
+
+        for item in discovered:
+            identity = item.get("identity") or {}
+            mac = normalize_mac(identity.get("mac"))
+            miner = by_mac.get(mac) if mac else None
+            matched_by = "mac" if miner else ""
+
+            if miner is None:
+                miner = by_ip.get(item["ip"])
+                matched_by = "ip" if miner else ""
+
+            if miner is not None:
+                old_ip = miner.get("ip")
+                if old_ip != item["ip"]:
+                    miner["ip"] = item["ip"]
+                    changed = True
+                    updates.append({
+                        "name": miner.get("name", ""),
+                        "old_ip": old_ip,
+                        "new_ip": item["ip"],
+                        "matched_by": matched_by,
+                    })
+                if merge_identity(miner, item):
+                    changed = True
+                known.append({
+                    "name": miner.get("name", ""),
+                    "ip": miner.get("ip", item["ip"]),
+                    "type": miner.get("type", item.get("type", "")),
+                    "identity": miner.get("identity", {}),
+                    "matched_by": matched_by,
+                })
+                continue
+
+            pending.append({
+                "name": discovery_display_name(item),
+                "ip": item["ip"],
+                "type": item.get("type", "axeos"),
+                "identity": identity,
+            })
+
+        if changed:
+            write_miners(miners)
+
+    write_json_file(PENDING_DISCOVERY_PATH, pending)
+    return {
+        "ok": True,
+        "discovered": len(discovered),
+        "known": known,
+        "updated": updates,
+        "pending": pending,
+    }
+
+def discover_and_reconcile(cidr=None):
+    return reconcile_discovered_miners(scan_for_miners(cidr))
+
+def startup_discovery():
+    try:
+        result = discover_and_reconcile()
+        if result["updated"] or result["pending"]:
+            print(
+                "Miner discovery: "
+                f"{len(result['updated'])} IP update(s), "
+                f"{len(result['pending'])} pending miner(s)",
+                flush=True,
+            )
+    except Exception as error:
+        print(f"Miner discovery error: {error}", flush=True)
+
 THERMAL_FIELDS = (
     "base_freq",
     "hot_freq",
@@ -230,6 +491,17 @@ def validate_miner_identity(data, existing_name=None):
     if len(coin) > 16:
         raise ValueError("Coin must be 16 characters or fewer")
 
+    identity = data.get("identity")
+    clean_identity = {}
+    if isinstance(identity, dict):
+        mac = normalize_mac(identity.get("mac"))
+        if mac:
+            clean_identity["mac"] = mac
+        for key in ("hostname", "model", "version"):
+            value = identity.get(key)
+            if isinstance(value, str) and value.strip():
+                clean_identity[key] = value.strip()[:80]
+
     return {
         "target_name": target_name,
         "name": name,
@@ -237,6 +509,7 @@ def validate_miner_identity(data, existing_name=None):
         "ip": ip,
         "pool": pool,
         "coin": coin,
+        "identity": clean_identity,
     }
 
 def miner_management_payload():
@@ -244,6 +517,7 @@ def miner_management_payload():
         miners = load_miners()
 
     return {
+        "pending": load_pending_discovery(),
         "miners": [
             {
                 "name": miner.get("name", ""),
@@ -252,6 +526,7 @@ def miner_management_payload():
                 "pool": miner.get("pool", ""),
                 "coin": miner.get("coin", ""),
                 "enabled": miner.get("enabled", True),
+                "identity": miner.get("identity", {}),
             }
             for miner in miners
         ]
@@ -277,6 +552,8 @@ def add_miner(data):
             "enabled": False,
             **defaults,
         }
+        if settings["identity"]:
+            miner["identity"] = settings["identity"]
         miners.append(miner)
         write_miners(miners)
 
@@ -308,6 +585,8 @@ def update_miner(data):
         miner["ip"] = settings["ip"]
         miner["pool"] = settings["pool"]
         miner["coin"] = settings["coin"]
+        if settings["identity"]:
+            miner["identity"] = settings["identity"]
         write_miners(miners)
 
     COLLECTOR_WAKE.set()
@@ -1126,6 +1405,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/reset_all_runs_logs",
                 "/api/discord/test",
                 "/api/thermal-settings",
+                "/api/miner-discovery/scan",
                 "/api/miner-management/add",
                 "/api/miner-management/update",
                 "/api/miner-management/delete",
@@ -1166,6 +1446,31 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     },
                 )
+                return
+
+            if self.path == "/api/miner-discovery/scan":
+                length = int(self.headers.get("Content-Length", 0))
+                if length > 4096:
+                    self.send_json(400, {"ok": False, "error": "Invalid request size"})
+                    return
+
+                data = {}
+                if length:
+                    try:
+                        data = json.loads(self.rfile.read(length).decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        self.send_json(400, {"ok": False, "error": "Invalid JSON body"})
+                        return
+
+                cidr = data.get("cidr") if isinstance(data, dict) else None
+                try:
+                    result = discover_and_reconcile(cidr)
+                except ValueError as error:
+                    self.send_json(400, {"ok": False, "error": str(error)})
+                    return
+
+                self.send_json(200, result)
+                COLLECTOR_WAKE.set()
                 return
 
             if self.path.startswith("/api/miner-management/"):
@@ -1371,6 +1676,19 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        parsed = urlparse(self.path)
+        if parsed.path == "/public/page3":
+            token = (parse_qs(parsed.query).get("token") or [""])[0]
+            expected = read_page3_public_token()
+            if not expected or not secrets.compare_digest(token, expected):
+                self.send_json(403, {"ok": False, "error": "Forbidden"})
+                return
+            snapshot = get_dashboard_snapshot()
+            if snapshot is None:
+                snapshot = empty_dashboard_snapshot()
+            self.send_json(200, build_page3_payload(snapshot))
+            return
+
         if self.path == "/api/page3":
             snapshot = get_dashboard_snapshot()
             if snapshot is None:
@@ -1442,6 +1760,8 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"Miner dashboard V2 running on port {PORT}")
+    ensure_page3_public_token()
+    startup_discovery()
     threading.Thread(target=collector_loop, name="miner-collector", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.serve_forever()

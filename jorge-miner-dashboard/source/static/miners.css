@@ -59,11 +59,52 @@ button:disabled { opacity: .5; cursor: wait; }
 .message.success { border-color: #166534; color: #86efac; }
 .message.error { border-color: #991b1b; color: #fca5a5; }
 
-.add-panel, .miner-card {
+.scan-panel, .pending-panel, .add-panel, .miner-card {
     border: 1px solid #27272a;
     border-radius: 14px;
     background: rgba(24, 24, 27, .92);
     overflow: hidden;
+}
+
+.scan-panel {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+    padding: 17px;
+}
+.scan-panel h2, .pending-panel h2 { margin: 0 0 6px; font-size: 17px; }
+.scan-panel p {
+    margin: 0;
+    max-width: 680px;
+    color: #a1a1aa;
+    font-size: 12px;
+    line-height: 1.45;
+}
+.scan-button { border-color: #1d4ed8; background: #1e3a8a; white-space: nowrap; }
+.scan-button:hover { background: #1d4ed8; }
+
+.pending-panel {
+    margin-bottom: 16px;
+    padding: 17px;
+}
+.pending-list { display: grid; gap: 10px; }
+.pending-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    border: 1px solid #3f3f46;
+    border-radius: 10px;
+    padding: 12px;
+    background: #09090b;
+}
+.pending-card h3 { margin: 0 0 4px; font-size: 14px; }
+.pending-card p {
+    margin: 6px 0 0;
+    color: #71717a;
+    font-size: 11px;
 }
 
 .add-panel {
@@ -141,6 +182,7 @@ input:focus, select:focus { outline: 2px solid #2563eb; border-color: transparen
 @media (max-width: 430px) {
     header { display: block; }
     .header-links { justify-content: flex-start; margin-top: 15px; }
+    .scan-panel, .pending-card { align-items: stretch; flex-direction: column; }
     .settings-grid { grid-template-columns: 1fr; }
     .miner-summary { align-items: flex-start; }
     .form-actions { align-items: stretch; flex-direction: column; }

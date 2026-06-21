@@ -42,6 +42,8 @@ The app expects these files under `${APP_DATA_DIR}/data`:
 - `active_mining_runs.json`
 - `history_v2.csv`
 - `miner_thermal_mode.log`
+- `.page3_public_token`
+- `pending_discovered_miners.json`
 
 The entrypoint creates default miner and Discord configuration files when
 they do not already exist.
@@ -67,6 +69,16 @@ The installed app source used for local inspection lives under:
 The old standalone dashboard directory and user services were removed. Do not
 recreate `/home/umbrel/miner_dashboard` or the old user units for dashboard,
 thermal, or log rotation control.
+
+## Miner discovery
+
+The dashboard runs a one-shot LAN discovery scan at startup and exposes the
+same scan from the Miners page. Discovery probes the configured subnet for
+AxeOS/NerdOS miners, stores stable identity data when available, and updates a
+known miner's IP only when it can match the same device. Unknown miners are
+stored as pending discoveries until they are manually added.
+
+Set `MINER_DISCOVERY_CIDR` to override the default auto-detected `/24`.
 
 ## Thermal manager
 
@@ -96,5 +108,9 @@ Decision order:
 Keep `/home/umbrel/avalon/avalon_mode.py` manual-only unless intentionally
 changing Avalon behavior. It is a helper for sending Avalon work-mode commands,
 not an active service.
+
+`GET /public/page3?token=<token>` exposes the compact page 3 status payload for
+remote polling. The token is generated in `${APP_DATA_DIR}/data/.page3_public_token`
+and the endpoint reuses the dashboard snapshot without extra miner polling.
 
 Never commit tokens, webhook URLs, or files containing credentials.
