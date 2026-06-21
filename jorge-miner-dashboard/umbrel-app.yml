@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Miner Dashboard Test
-version: "1.2.11"
+version: "1.2.12"
 tagline: Test the Umbrel-native miner dashboard
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
@@ -25,5 +25,4 @@ torOnly: false
 submitter: Jorge
 submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 releaseNotes: >-
-  Polishes the dashboard controls, keeps the total hashrate on one line, and
-  adds iOS home-screen icon support.
+  Adds the compact page 3 status API and removes the completed migration path.

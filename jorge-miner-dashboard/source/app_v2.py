@@ -930,6 +930,149 @@ def empty_dashboard_snapshot():
         },
     }
 
+def build_page3_payload(snapshot):
+    miners = snapshot.get("miners", []) or []
+    odds = snapshot.get("odds", {}) or {}
+    solopool = snapshot.get("solopool", {}) or {}
+    braiins = snapshot.get("braiins", {}) or {}
+
+    def pool_miners(pool):
+        return [miner for miner in miners if miner.get("pool") == pool]
+
+    def pool_hash(pool_items):
+        total = 0.0
+        for miner in pool_items:
+            try:
+                total += float(miner.get("th", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+        return total
+
+    def is_hashing(miner):
+        try:
+            return bool(miner.get("online")) and float(miner.get("th", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def max_value(values):
+        best = 0.0
+        for value in values:
+            try:
+                best = max(best, float(value or 0))
+            except (TypeError, ValueError):
+                pass
+        return best
+
+    def best_network_pct(best, difficulty):
+        try:
+            best = float(best or 0)
+            difficulty = float(difficulty or 0)
+        except (TypeError, ValueError):
+            return None
+        if best <= 0 or difficulty <= 0:
+            return None
+        return (best / difficulty) * 100
+
+    def odds_payload(pool_name):
+        item = odds.get(pool_name, {}) or {}
+        return {
+            "difficulty": item.get("difficulty"),
+            "hour_den": item.get("hour_den"),
+            "day_den": item.get("day_den"),
+            "month_den": item.get("month_den"),
+            "year_den": item.get("year_den"),
+            "run_probability_pct": item.get("run_probability_pct"),
+        }
+
+    btc_miners = pool_miners("Umbrel Solo")
+    bch_miners = pool_miners("BCH SoloPool")
+    braiins_miners = pool_miners("Braiins")
+    btc_th = pool_hash(btc_miners)
+    bch_th = pool_hash(bch_miners)
+    braiins_th = pool_hash(braiins_miners)
+    total_th = btc_th + bch_th + braiins_th
+
+    def allocation_pct(value):
+        return (value / total_th) * 100 if total_th > 0 else 0.0
+
+    btc_odds = odds_payload("Umbrel Solo")
+    bch_odds = odds_payload("BCH SoloPool")
+    btc_session_best = max_value(miner.get("best_session_diff") for miner in btc_miners)
+    btc_historic_best = max_value(miner.get("best_diff") for miner in btc_miners)
+    bch_session_best = max_value(miner.get("best_session_diff") for miner in bch_miners)
+    bch_historic_best = max_value(
+        [miner.get("best_diff") for miner in bch_miners] + [solopool.get("best_share")]
+    )
+
+    workers = []
+    for worker in braiins.get("workers", []) or []:
+        try:
+            hash_5m = float(worker.get("hash_rate_5m_th", 0) or 0)
+            hash_60m = float(worker.get("hash_rate_60m_th", 0) or 0)
+        except (TypeError, ValueError):
+            hash_5m = 0.0
+            hash_60m = 0.0
+        if hash_5m > 0 or hash_60m > 0:
+            workers.append({
+                "name": worker.get("name", ""),
+                "state": worker.get("state", "unknown"),
+                "hash_rate_5m_th": hash_5m,
+                "hash_rate_60m_th": hash_60m,
+                "hash_rate_24h_th": worker.get("hash_rate_24h_th"),
+            })
+    workers.sort(key=lambda worker: worker["hash_rate_5m_th"], reverse=True)
+
+    return {
+        "updated": snapshot.get("updated"),
+        "total_th": total_th,
+        "allocation": {
+            "btc_solo_pct": allocation_pct(btc_th),
+            "bch_solo_pct": allocation_pct(bch_th),
+            "braiins_pct": allocation_pct(braiins_th),
+        },
+        "btc_solo": {
+            "pool": "Umbrel Solo",
+            "coin": "BTC",
+            "hashrate_th": btc_th,
+            "miners": [miner.get("name", "") for miner in btc_miners],
+            "online_miners": [
+                miner.get("name", "")
+                for miner in btc_miners
+                if is_hashing(miner)
+            ],
+            "session_best": btc_session_best,
+            "historic_best": btc_historic_best,
+            "best_network_pct": best_network_pct(btc_historic_best, btc_odds["difficulty"]),
+            "odds": btc_odds,
+        },
+        "bch_solo": {
+            "pool": "BCH SoloPool",
+            "coin": "BCH",
+            "hashrate_th": bch_th,
+            "miners": [miner.get("name", "") for miner in bch_miners],
+            "online_miners": [
+                miner.get("name", "")
+                for miner in bch_miners
+                if is_hashing(miner)
+            ],
+            "session_best": bch_session_best,
+            "historic_best": bch_historic_best,
+            "best_network_pct": best_network_pct(bch_historic_best, bch_odds["difficulty"]),
+            "odds": bch_odds,
+            "solopool_best_share": solopool.get("best_share"),
+        },
+        "braiins": {
+            "pool": "Braiins",
+            "coin": "BTC",
+            "hashrate_th": braiins_th,
+            "pool_60m_th": braiins.get("hash_rate_60m_th"),
+            "pool_24h_th": braiins.get("hash_rate_24h_th"),
+            "today_reward": braiins.get("today_reward"),
+            "balance": braiins.get("current_balance"),
+            "workers": workers,
+        },
+    }
+
 def collector_loop():
     while True:
         try:
@@ -1226,6 +1369,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        if self.path == "/api/page3":
+            snapshot = get_dashboard_snapshot()
+            if snapshot is None:
+                snapshot = empty_dashboard_snapshot()
+            self.send_json(200, build_page3_payload(snapshot))
             return
 
         if self.path == "/api/performance":

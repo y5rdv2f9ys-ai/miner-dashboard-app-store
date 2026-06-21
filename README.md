@@ -2,8 +2,12 @@
 
 This repository packages the custom miner dashboard as an Umbrel app.
 
-The current manifest is an isolated migration test and uses external port
-`6056`, allowing it to run alongside the existing dashboard on `5056`.
+The Umbrel app is the only supported runtime for this dashboard. The legacy
+standalone dashboard has been retired.
+
+Published images use:
+
+`ghcr.io/y5rdv2f9ys-ai/miner-dashboard:<version>`
 
 The app uses two containers built from the same image:
 
@@ -42,15 +46,55 @@ The app expects these files under `${APP_DATA_DIR}/data`:
 The entrypoint creates default miner and Discord configuration files when
 they do not already exist.
 
-## Migrate the current installation
+## Runtime
 
-After Umbrel creates the app data directory, stop the old services and copy
-the current state:
+Install and update the app through the Umbrel app-store flow. Persistent app
+state remains under `${APP_DATA_DIR}/data`; do not run a second standalone
+dashboard or thermal controller against the same miners.
 
-```bash
-systemctl --user stop miner-dashboard.service miner-thermal.service
-./migrate-data.sh
-```
+On the Umbrel host, the installed app data lives under:
 
-Then start the app from Umbrel. Keep the old services disabled after the app
-has been verified to prevent duplicate polling and thermal control.
+`/home/umbrel/umbrel/app-data/jorge-miner-dashboard/data`
+
+The packaged app source in this repository lives under:
+
+`/home/umbrel/miner-dashboard-app-store/jorge-miner-dashboard/source`
+
+The installed app source used for local inspection lives under:
+
+`/home/umbrel/umbrel/app-data/jorge-miner-dashboard/source`
+
+The old standalone dashboard directory and user services were removed. Do not
+recreate `/home/umbrel/miner_dashboard` or the old user units for dashboard,
+thermal, or log rotation control.
+
+## Thermal manager
+
+The thermal manager checks miners every 60 seconds and only writes miner
+frequency. Voltage, VR temperature, reject rate, and hashrate are monitored but
+do not control thermal decisions.
+
+Per-miner thermal control uses:
+
+- `enabled`
+- `base_freq`
+- `hot_freq`
+- `critical_freq`
+- `recover_temp`
+- `warn_temp`
+- `critical_temp`
+
+Decision order:
+
+1. At or above `critical_temp`, apply `critical_freq`.
+2. Otherwise, at or above `warn_temp`, apply `hot_freq`.
+3. At or below `recover_temp`, restore `base_freq`.
+4. Between recovery and warning temperatures, hold the reduced frequency.
+
+## Helpers
+
+Keep `/home/umbrel/avalon/avalon_mode.py` manual-only unless intentionally
+changing Avalon behavior. It is a helper for sending Avalon work-mode commands,
+not an active service.
+
+Never commit tokens, webhook URLs, or files containing credentials.
