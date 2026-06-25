@@ -32,6 +32,7 @@ class BenchmarkProfilesTests(unittest.TestCase):
         self.assertEqual(profile["id"], "nerdos_nerdoctaxe")
         self.assertEqual(profile["frequency"]["step"], 5)
         self.assertEqual(profile["safety"]["max_chip_temp"], 74)
+        self.assertEqual(profile["safety"]["max_power_watts"], 220)
 
     def test_unknown_nerdos_defaults_to_nerdqaxe_profile(self):
         profile = benchmark_profiles.select_profile(

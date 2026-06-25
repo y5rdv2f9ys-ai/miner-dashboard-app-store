@@ -74,7 +74,7 @@ PROFILES = {
             "min_hashrate_th": 2.0,
             "max_chip_temp": 74,
             "max_vr_temp": 90,
-            "max_power_watts": 150,
+            "max_power_watts": 220,
             "min_input_voltage": 4.8,
             "max_input_voltage": 5.3,
             "api_failure_limit": 3,
