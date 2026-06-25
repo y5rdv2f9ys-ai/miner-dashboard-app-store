@@ -16,8 +16,14 @@ from urllib.request import Request, urlopen
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import benchmark_restore
+import benchmark_results
+import benchmark_sessions
+import benchmark_profiles
+import benchmark_engine
+import thermal_locks
 from discord_alerts import DiscordAlertManager
-from miner_telemetry import get_hashrate_th, get_reject_pct, get_voltage_mv, get_vr_temp
+from miner_api import apply_settings, get_system_info, normalized_stats
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("MINER_DASHBOARD_DATA_DIR", APP_DIR))
@@ -42,11 +48,18 @@ SNAPSHOT_LOCK = threading.Lock()
 CONFIG_LOCK = threading.Lock()
 COLLECTOR_WAKE = threading.Event()
 DASHBOARD_SNAPSHOT = None
+BENCHMARK_RUNNER_LOCK = threading.Lock()
+BENCHMARK_RUNNERS = {}
 
 RUNS_PATH = DATA_DIR / "active_mining_runs.json"
 MINERS_PATH = DATA_DIR / "miners_v2.json"
 PENDING_DISCOVERY_PATH = DATA_DIR / "pending_discovered_miners.json"
 PAGE3_PUBLIC_TOKEN_PATH = DATA_DIR / ".page3_public_token"
+PAGE3_PUBLIC_PATHS = {"/public/page3", "/public/page3-data"}
+BENCHMARK_SESSIONS_PATH = DATA_DIR / "benchmark_sessions.json"
+BENCHMARK_RESTORE_PATH = DATA_DIR / "benchmark_restore_profiles.json"
+BENCHMARK_RESULTS_PATH = DATA_DIR / "benchmark_results.json"
+THERMAL_LOCKS_PATH = DATA_DIR / "thermal_locks.json"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
 BTC_BLOCKS_DB = Path(
@@ -194,6 +207,16 @@ def read_page3_public_token():
     except Exception:
         return ""
 
+def valid_page3_public_token(token):
+    expected = read_page3_public_token()
+    return bool(expected) and secrets.compare_digest(token or "", expected)
+
+def page3_public_payload():
+    snapshot = get_dashboard_snapshot()
+    if snapshot is None:
+        snapshot = empty_dashboard_snapshot()
+    return build_page3_payload(snapshot)
+
 def normalize_mac(value):
     if not isinstance(value, str):
         return ""
@@ -269,13 +292,8 @@ def default_discovery_cidr():
     return "192.168.1.0/24"
 
 def probe_miner(ip):
-    url = f"http://{ip}/api/system/info"
     try:
-        with urlopen(url, timeout=0.5) as response:
-            if response.status != 200:
-                return None
-            body = response.read(65536)
-        info = json.loads(body.decode("utf-8"))
+        info = get_system_info(ip, timeout=0.5)
         if not isinstance(info, dict):
             return None
         identity = extract_miner_identity(info)
@@ -414,19 +432,28 @@ def startup_discovery():
 
 THERMAL_FIELDS = (
     "base_freq",
+    "base_volt",
     "hot_freq",
+    "hot_volt",
     "critical_freq",
+    "critical_volt",
     "warn_temp",
     "critical_temp",
     "recover_temp",
 )
+
+FREQUENCY_FIELDS = ("base_freq", "hot_freq", "critical_freq")
+VOLTAGE_FIELDS = ("base_volt", "hot_volt", "critical_volt")
+TEMPERATURE_FIELDS = ("warn_temp", "critical_temp", "recover_temp")
 
 DEFAULT_THERMAL_SETTINGS = {
     "axeos": {
         "base_freq": 550,
         "base_volt": 1150,
         "hot_freq": 525,
+        "hot_volt": 1150,
         "critical_freq": 500,
+        "critical_volt": 1150,
         "warn_temp": 68,
         "critical_temp": 70,
         "recover_temp": 64,
@@ -435,7 +462,9 @@ DEFAULT_THERMAL_SETTINGS = {
         "base_freq": 700,
         "base_volt": 1200,
         "hot_freq": 650,
+        "hot_volt": 1200,
         "critical_freq": 560,
+        "critical_volt": 1200,
         "warn_temp": 66,
         "critical_temp": 68,
         "recover_temp": 64,
@@ -625,8 +654,11 @@ def validate_thermal_settings(data):
         raise ValueError("Enabled must be true or false")
 
     settings = {"name": name.strip(), "enabled": enabled}
+    base_volt = data.get("base_volt")
     for field in THERMAL_FIELDS:
         value = data.get(field)
+        if field in ("hot_volt", "critical_volt") and value is None:
+            value = base_volt
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{field} must be a number")
         value = float(value)
@@ -634,13 +666,19 @@ def validate_thermal_settings(data):
             raise ValueError(f"{field} must be a finite number")
         settings[field] = value
 
-    for field in ("base_freq", "hot_freq", "critical_freq"):
+    for field in FREQUENCY_FIELDS:
         value = settings[field]
         if not value.is_integer() or not 1 <= value <= 2000:
             raise ValueError(f"{field} must be a whole number between 1 and 2000")
         settings[field] = int(value)
 
-    for field in ("warn_temp", "critical_temp", "recover_temp"):
+    for field in VOLTAGE_FIELDS:
+        value = settings[field]
+        if not value.is_integer() or not 1 <= value <= 2000:
+            raise ValueError(f"{field} must be a whole number between 1 and 2000")
+        settings[field] = int(value)
+
+    for field in TEMPERATURE_FIELDS:
         if not 1 <= settings[field] <= 120:
             raise ValueError(f"{field} must be between 1 and 120")
 
@@ -694,14 +732,18 @@ def thermal_settings_payload():
 
     for miner in configured:
         current = live_by_name.get(miner.get("name"), {})
+        base_volt = miner.get("base_volt")
         miners.append({
             "name": miner.get("name", ""),
             "type": miner.get("type", ""),
             "ip": miner.get("ip", ""),
             "enabled": miner.get("enabled", True),
             "base_freq": miner.get("base_freq"),
+            "base_volt": base_volt,
             "hot_freq": miner.get("hot_freq"),
+            "hot_volt": miner.get("hot_volt", base_volt),
             "critical_freq": miner.get("critical_freq"),
+            "critical_volt": miner.get("critical_volt", base_volt),
             "warn_temp": miner.get("warn_temp"),
             "critical_temp": miner.get("critical_temp"),
             "recover_temp": miner.get("recover_temp"),
@@ -711,6 +753,755 @@ def thermal_settings_payload():
             "online": current.get("online", False),
         })
     return {"miners": miners, "check_interval_seconds": 60}
+
+def find_configured_miner(name):
+    with CONFIG_LOCK:
+        miners = load_miners()
+    matches = [miner for miner in miners if miner.get("name") == name]
+    if len(matches) != 1:
+        raise LookupError("Miner was not found or its name is not unique")
+    return matches[0]
+
+def start_benchmark_session(data):
+    if not isinstance(data, dict):
+        raise ValueError("Benchmark request must be a JSON object")
+    name = data.get("miner")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Miner name is required")
+    miner = find_configured_miner(name.strip())
+    session = benchmark_sessions.create_session(
+        BENCHMARK_SESSIONS_PATH,
+        miner["name"],
+    )
+    session_id = session["session_id"]
+    restore_created = False
+    lock_created = False
+    try:
+        stats = normalized_stats(miner, timeout=REQUEST_TIMEOUT)
+        profile = benchmark_profiles.select_profile(miner, stats)
+        baseline = {
+            "frequency": stats.get("freq"),
+            "voltage": stats.get("volt"),
+            "base_frequency": miner.get("base_freq"),
+            "base_voltage": miner.get("base_volt"),
+        }
+        plan = benchmark_engine.dry_run_plan(profile, baseline=baseline)
+        benchmark_results.save_planned_results(
+            BENCHMARK_RESULTS_PATH,
+            session_id,
+            plan["candidates"],
+            created_at=session.get("created_at"),
+        )
+        benchmark_sessions.update_session(
+            BENCHMARK_SESSIONS_PATH,
+            session_id,
+            {
+                "device_profile": profile["id"],
+                "device_profile_label": profile["label"],
+                "benchmark_plan": {
+                    "mode": plan["mode"],
+                    "writes_enabled": plan["writes_enabled"],
+                    "candidate_count": len(plan["candidates"]),
+                    "first_candidate": plan["candidates"][0] if plan["candidates"] else None,
+                    "baseline": baseline,
+                },
+            },
+        )
+        benchmark_restore.save_restore_profile(
+            BENCHMARK_RESTORE_PATH,
+            session_id,
+            miner,
+            stats,
+            created_at=session.get("created_at"),
+        )
+        restore_created = True
+        thermal_locks.create_lock(
+            THERMAL_LOCKS_PATH,
+            miner["name"],
+            locked_by="benchmark",
+            session_id=session_id,
+            created_at=session.get("created_at"),
+        )
+        lock_created = True
+        completed = benchmark_sessions.complete_read_only_session(
+            BENCHMARK_SESSIONS_PATH,
+            session_id,
+        )
+        benchmark_restore.mark_restore_profile(
+            BENCHMARK_RESTORE_PATH,
+            session_id,
+            "restored",
+            completed_at=completed.get("completed_at"),
+            reason="read_only_completed",
+        )
+        thermal_locks.release_lock(
+            THERMAL_LOCKS_PATH,
+            miner["name"],
+            session_id=session_id,
+        )
+        return completed
+    except Exception as error:
+        if lock_created:
+            thermal_locks.release_lock(
+                THERMAL_LOCKS_PATH,
+                miner["name"],
+                session_id=session_id,
+            )
+        if restore_created:
+            try:
+                benchmark_restore.mark_restore_profile(
+                    BENCHMARK_RESTORE_PATH,
+                    session_id,
+                    "failed",
+                    reason=str(error),
+                )
+            except Exception:
+                pass
+        try:
+            benchmark_sessions.transition_session(
+                BENCHMARK_SESSIONS_PATH,
+                session_id,
+                "failed",
+                reason=str(error),
+            )
+        except Exception:
+            pass
+        raise
+
+def cancel_benchmark_session(data):
+    if not isinstance(data, dict):
+        raise ValueError("Benchmark request must be a JSON object")
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("Session ID is required")
+    canceled = benchmark_sessions.cancel_session(
+        BENCHMARK_SESSIONS_PATH,
+        session_id.strip(),
+    )
+    thermal_locks.release_lock(
+        THERMAL_LOCKS_PATH,
+        canceled.get("miner", ""),
+        session_id=canceled.get("session_id"),
+    )
+    try:
+        benchmark_restore.mark_restore_profile(
+            BENCHMARK_RESTORE_PATH,
+            canceled["session_id"],
+            "canceled",
+            completed_at=canceled.get("completed_at"),
+            reason="canceled_by_user",
+        )
+    except LookupError:
+        pass
+    return canceled
+
+def cancel_active_benchmark_session(data):
+    if not isinstance(data, dict):
+        raise ValueError("Benchmark request must be a JSON object")
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("Session ID is required")
+    session_id = session_id.strip()
+
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        raise LookupError("Benchmark session was not found")
+    if session.get("state") in benchmark_sessions.TERMINAL_STATES:
+        raise ValueError("Benchmark session is already finished")
+
+    restore_profile = benchmark_restore.get_restore_profile(
+        BENCHMARK_RESTORE_PATH,
+        session_id,
+    )
+    if session.get("settings_written") and not isinstance(restore_profile, dict):
+        raise LookupError("Restore profile was not found")
+
+    canceling = benchmark_sessions.transition_session(
+        BENCHMARK_SESSIONS_PATH,
+        session_id,
+        "canceling",
+        reason="canceled_by_user",
+    )
+    restored = False
+    if canceling.get("settings_written"):
+        restore_benchmark_miner(restore_profile)
+        restored = True
+
+    for row in benchmark_results.session_results(BENCHMARK_RESULTS_PATH, session_id):
+        if row.get("status") in ("planned", "applied"):
+            benchmark_results.update_candidate_result(
+                BENCHMARK_RESULTS_PATH,
+                session_id,
+                row.get("sequence"),
+                {
+                    "status": "canceled",
+                    "safety_decision": "CANCELED_BY_USER",
+                },
+            )
+
+    thermal_locks.release_lock(
+        THERMAL_LOCKS_PATH,
+        canceling.get("miner", ""),
+        session_id=session_id,
+    )
+    canceled = benchmark_sessions.transition_session(
+        BENCHMARK_SESSIONS_PATH,
+        session_id,
+        "canceled",
+        reason="canceled_by_user",
+    )
+    if isinstance(restore_profile, dict):
+        benchmark_restore.mark_restore_profile(
+            BENCHMARK_RESTORE_PATH,
+            session_id,
+            "restored" if restored else "canceled",
+            completed_at=canceled.get("completed_at"),
+            reason="canceled_by_user",
+        )
+    return {
+        "session": canceled,
+        "restored": restored,
+    }
+
+def prepare_benchmark_session(data):
+    if not isinstance(data, dict):
+        raise ValueError("Benchmark request must be a JSON object")
+    name = data.get("miner")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Miner name is required")
+    miner = find_configured_miner(name.strip())
+    session = benchmark_sessions.create_session(
+        BENCHMARK_SESSIONS_PATH,
+        miner["name"],
+    )
+    session_id = session["session_id"]
+    restore_created = False
+    lock_created = False
+    try:
+        stats = normalized_stats(miner, timeout=REQUEST_TIMEOUT)
+        profile = benchmark_profiles.select_profile(miner, stats)
+        baseline = {
+            "frequency": stats.get("freq"),
+            "voltage": stats.get("volt"),
+            "base_frequency": miner.get("base_freq"),
+            "base_voltage": miner.get("base_volt"),
+        }
+        plan = benchmark_engine.dry_run_plan(profile, baseline=baseline)
+        benchmark_results.save_planned_results(
+            BENCHMARK_RESULTS_PATH,
+            session_id,
+            plan["candidates"],
+            created_at=session.get("created_at"),
+        )
+        benchmark_sessions.update_session(
+            BENCHMARK_SESSIONS_PATH,
+            session_id,
+            {
+                "mode": "active_prepare",
+                "device_profile": profile["id"],
+                "device_profile_label": profile["label"],
+                "benchmark_plan": {
+                    "mode": plan["mode"],
+                    "writes_enabled": False,
+                    "candidate_count": len(plan["candidates"]),
+                    "first_candidate": plan["candidates"][0] if plan["candidates"] else None,
+                    "baseline": baseline,
+                },
+            },
+        )
+        benchmark_restore.save_restore_profile(
+            BENCHMARK_RESTORE_PATH,
+            session_id,
+            miner,
+            stats,
+            created_at=session.get("created_at"),
+        )
+        restore_created = True
+        thermal_locks.create_lock(
+            THERMAL_LOCKS_PATH,
+            miner["name"],
+            locked_by="benchmark",
+            session_id=session_id,
+            created_at=session.get("created_at"),
+        )
+        lock_created = True
+        return benchmark_sessions.transition_session(
+            BENCHMARK_SESSIONS_PATH,
+            session_id,
+            "benchmarking",
+            reason="prepared_for_manual_candidate_runs",
+        )
+    except Exception as error:
+        if lock_created:
+            thermal_locks.release_lock(
+                THERMAL_LOCKS_PATH,
+                miner["name"],
+                session_id=session_id,
+            )
+        if restore_created:
+            try:
+                benchmark_restore.mark_restore_profile(
+                    BENCHMARK_RESTORE_PATH,
+                    session_id,
+                    "failed",
+                    reason=str(error),
+                )
+            except Exception:
+                pass
+        try:
+            benchmark_sessions.transition_session(
+                BENCHMARK_SESSIONS_PATH,
+                session_id,
+                "failed",
+                reason=str(error),
+            )
+        except Exception:
+            pass
+        raise
+
+def run_benchmark_candidate(data):
+    if not isinstance(data, dict):
+        raise ValueError("Benchmark request must be a JSON object")
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("Session ID is required")
+    sequence = data.get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise ValueError("Candidate sequence must be a positive integer")
+    session_id = session_id.strip()
+    if data.get("blocking") is True:
+        return sample_benchmark_candidate(session_id, sequence)
+    return start_benchmark_candidate_runner(session_id, sequence)
+
+def benchmark_runner_payload(session_id=None):
+    with BENCHMARK_RUNNER_LOCK:
+        if session_id:
+            runner = BENCHMARK_RUNNERS.get(session_id)
+            return dict(runner) if isinstance(runner, dict) else None
+        return {
+            key: dict(value)
+            for key, value in BENCHMARK_RUNNERS.items()
+            if isinstance(value, dict)
+        }
+
+def start_benchmark_candidate_runner(session_id, sequence):
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        raise LookupError("Benchmark session was not found")
+    if session.get("state") not in benchmark_sessions.ACTIVE_STATES:
+        raise ValueError("Benchmark session is not active")
+    benchmark_results.candidate_result(
+        BENCHMARK_RESULTS_PATH,
+        session_id,
+        int(sequence),
+    )
+
+    with BENCHMARK_RUNNER_LOCK:
+        existing = BENCHMARK_RUNNERS.get(session_id)
+        if isinstance(existing, dict) and existing.get("status") == "running":
+            raise ValueError("Benchmark candidate is already running")
+        runner = {
+            "session_id": session_id,
+            "sequence": int(sequence),
+            "status": "running",
+            "started_at": datetime.now(TZ).isoformat(),
+        }
+        BENCHMARK_RUNNERS[session_id] = runner
+
+    def worker():
+        try:
+            result = sample_benchmark_candidate(session_id, sequence)
+            update = {
+                "status": "completed",
+                "completed_at": datetime.now(TZ).isoformat(),
+                "result": result,
+            }
+        except Exception as error:
+            update = {
+                "status": "failed",
+                "completed_at": datetime.now(TZ).isoformat(),
+                "error": str(error),
+            }
+        with BENCHMARK_RUNNER_LOCK:
+            current = BENCHMARK_RUNNERS.get(session_id)
+            if isinstance(current, dict):
+                current.update(update)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return {
+        "ok": True,
+        "runner": benchmark_runner_payload(session_id),
+    }
+
+def restore_benchmark_miner(profile):
+    restore = profile.get("restore") if isinstance(profile, dict) else None
+    if not isinstance(restore, dict):
+        raise ValueError("Restore profile is missing restore settings")
+    frequency = restore.get("frequency")
+    voltage = restore.get("voltage")
+    if frequency is None or voltage is None:
+        raise ValueError("Restore profile is missing frequency or voltage")
+    miner = {
+        "name": profile.get("miner"),
+        "ip": profile.get("ip"),
+        "type": profile.get("device_type"),
+    }
+    if not miner["ip"] or not miner["type"]:
+        raise ValueError("Restore profile is missing miner identity")
+    return apply_settings(
+        miner,
+        frequency=frequency,
+        voltage=voltage,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+def recover_benchmark_sessions():
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    session = benchmark_sessions.active_session(sessions)
+    if not session:
+        return {"recovered": False, "reason": "no_active_session"}
+
+    session_id = session.get("session_id")
+    miner_name = session.get("miner", "")
+    state = session.get("state")
+    reason = f"recovered_after_restart_from_{state}"
+    restored_settings = False
+
+    try:
+        profile = benchmark_restore.get_restore_profile(BENCHMARK_RESTORE_PATH, session_id)
+        if session.get("settings_written"):
+            if not isinstance(profile, dict):
+                raise LookupError("Restore profile was not found")
+            restore_benchmark_miner(profile)
+            restored_settings = True
+
+        if state == "canceling":
+            recovered = benchmark_sessions.transition_session(
+                BENCHMARK_SESSIONS_PATH,
+                session_id,
+                "canceled",
+                reason=reason,
+            )
+            restore_status = "canceled"
+        else:
+            recovered = benchmark_sessions.transition_session(
+                BENCHMARK_SESSIONS_PATH,
+                session_id,
+                "failed",
+                reason=reason,
+            )
+            restore_status = "restored" if restored_settings else "failed"
+
+        if isinstance(profile, dict):
+            try:
+                benchmark_restore.mark_restore_profile(
+                    BENCHMARK_RESTORE_PATH,
+                    session_id,
+                    restore_status,
+                    completed_at=recovered.get("completed_at"),
+                    reason=reason,
+                )
+            except LookupError:
+                pass
+        thermal_locks.release_lock(
+            THERMAL_LOCKS_PATH,
+            miner_name,
+            session_id=session_id,
+        )
+        return {
+            "recovered": True,
+            "session_id": session_id,
+            "state": recovered.get("state"),
+            "restored_settings": restored_settings,
+        }
+    except Exception as error:
+        try:
+            benchmark_sessions.transition_session(
+                BENCHMARK_SESSIONS_PATH,
+                session_id,
+                "failed",
+                reason=f"recovery_failed: {error}",
+            )
+        except Exception:
+            pass
+        raise
+
+def benchmark_status_payload():
+    payload = benchmark_sessions.sessions_payload(BENCHMARK_SESSIONS_PATH)
+    payload["profiles"] = benchmark_profiles.all_profiles()
+    payload["runner"] = None
+    active = payload.get("active")
+    if active:
+        payload["runner"] = benchmark_runner_payload(active.get("session_id"))
+    payload["active_results"] = (
+        benchmark_results.report_payload(
+            BENCHMARK_RESULTS_PATH,
+            active.get("session_id"),
+        )
+        if active else None
+    )
+    payload["results"] = {
+        session["session_id"]: benchmark_results.report_payload(
+            BENCHMARK_RESULTS_PATH,
+            session["session_id"],
+        )
+        for session in payload["sessions"]
+        if isinstance(session, dict) and session.get("session_id")
+    }
+    return payload
+
+def benchmark_report_payload(session_id):
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("Session ID is required")
+    session_id = session_id.strip()
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        raise LookupError("Benchmark session was not found")
+    profile = None
+    if session.get("device_profile"):
+        profile = benchmark_profiles.get_profile(session["device_profile"])
+    restore_profile = benchmark_restore.get_restore_profile(
+        BENCHMARK_RESTORE_PATH,
+        session_id,
+    )
+    return benchmark_results.export_report(
+        BENCHMARK_RESULTS_PATH,
+        session,
+        restore_profile=restore_profile,
+        profile=profile,
+    )
+
+def guarded_benchmark_setting_write(session_id, sequence, prewrite_sample):
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        raise LookupError("Benchmark session was not found")
+    if session.get("state") not in benchmark_sessions.ACTIVE_STATES:
+        raise ValueError("Benchmark session is not active")
+
+    profile_id = session.get("device_profile")
+    if not profile_id:
+        raise ValueError("Benchmark session is missing device profile")
+    profile = benchmark_profiles.get_profile(profile_id)
+
+    candidate = benchmark_results.candidate_result(
+        BENCHMARK_RESULTS_PATH,
+        session_id,
+        int(sequence),
+    )
+    if not isinstance(candidate, dict):
+        raise LookupError("Benchmark candidate result was not found")
+    benchmark_profiles.validate_setting(
+        profile,
+        candidate.get("frequency"),
+        candidate.get("voltage"),
+    )
+
+    restore_profile = benchmark_restore.get_restore_profile(
+        BENCHMARK_RESTORE_PATH,
+        session_id,
+    )
+    if not isinstance(restore_profile, dict):
+        raise LookupError("Restore profile was not found")
+    if restore_profile.get("status") != "active":
+        raise ValueError("Restore profile is not active")
+
+    locks = thermal_locks.load_locks(THERMAL_LOCKS_PATH)
+    lock = thermal_locks.active_lock_for(session.get("miner"), locks)
+    if not isinstance(lock, dict):
+        raise ValueError("Benchmark thermal lock is missing")
+    if str(lock.get("session_id", "")).strip() != session_id:
+        raise ValueError("Benchmark thermal lock belongs to another session")
+
+    safety_decision = benchmark_engine.safety_failure(profile, prewrite_sample)
+    if safety_decision:
+        benchmark_results.update_candidate_result(
+            BENCHMARK_RESULTS_PATH,
+            session_id,
+            int(sequence),
+            {
+                "status": "aborted",
+                "safety_decision": safety_decision,
+            },
+        )
+        raise ValueError(f"Pre-write safety check failed: {safety_decision}")
+
+    miner = {
+        "name": restore_profile.get("miner"),
+        "ip": restore_profile.get("ip"),
+        "type": restore_profile.get("device_type"),
+    }
+    if not miner["ip"] or not miner["type"]:
+        raise ValueError("Restore profile is missing miner identity")
+
+    response = apply_settings(
+        miner,
+        frequency=candidate["frequency"],
+        voltage=candidate["voltage"],
+        timeout=REQUEST_TIMEOUT,
+    )
+    benchmark_sessions.update_session(
+        BENCHMARK_SESSIONS_PATH,
+        session_id,
+        {"settings_written": True},
+    )
+    benchmark_results.update_candidate_result(
+        BENCHMARK_RESULTS_PATH,
+        session_id,
+        int(sequence),
+        {
+            "status": "applied",
+            "safety_decision": None,
+        },
+    )
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "sequence": int(sequence),
+        "frequency": candidate["frequency"],
+        "voltage": candidate["voltage"],
+        "response": response,
+    }
+
+def sample_benchmark_candidate(
+    session_id,
+    sequence,
+    sample_provider=None,
+    sleep_fn=time.sleep,
+    max_samples=None,
+):
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        raise LookupError("Benchmark session was not found")
+    if session.get("state") not in benchmark_sessions.ACTIVE_STATES:
+        raise ValueError("Benchmark session is not active")
+    profile = benchmark_profiles.get_profile(session.get("device_profile"))
+    restore_profile = benchmark_restore.get_restore_profile(
+        BENCHMARK_RESTORE_PATH,
+        session_id,
+    )
+    if not isinstance(restore_profile, dict):
+        raise LookupError("Restore profile was not found")
+
+    miner = {
+        "name": restore_profile.get("miner"),
+        "ip": restore_profile.get("ip"),
+        "type": restore_profile.get("device_type"),
+    }
+    if not miner["ip"] or not miner["type"]:
+        raise ValueError("Restore profile is missing miner identity")
+
+    sample_provider = sample_provider or (
+        lambda: normalized_stats(miner, timeout=REQUEST_TIMEOUT)
+    )
+    prewrite_sample = sample_provider()
+    guarded_benchmark_setting_write(session_id, sequence, prewrite_sample)
+
+    timing = profile["timing"]
+    interval = int(timing["sample_interval_seconds"])
+    total_samples = max(1, int(timing["test_seconds"]) // interval)
+    if max_samples is not None:
+        total_samples = min(total_samples, int(max_samples))
+
+    samples = []
+    api_failures = 0
+    zero_hashrate_seconds = 0
+    elapsed_seconds = 0
+    try:
+        if timing.get("warmup_seconds"):
+            sleep_fn(timing["warmup_seconds"])
+        for _ in range(total_samples):
+            sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+            active_session = sessions.get(session_id)
+            if (
+                not isinstance(active_session, dict)
+                or active_session.get("state") not in benchmark_sessions.ACTIVE_STATES
+            ):
+                raise ValueError("Benchmark session is not active")
+            try:
+                sample = sample_provider()
+            except Exception:
+                api_failures += 1
+                sample = None
+            if sample is not None:
+                samples.append(sample)
+                if sample.get("th") is not None and sample.get("th") <= 0:
+                    zero_hashrate_seconds += interval
+                else:
+                    zero_hashrate_seconds = 0
+
+            safety_decision = benchmark_engine.safety_failure(
+                profile,
+                sample,
+                api_failures=api_failures,
+                zero_hashrate_seconds=zero_hashrate_seconds,
+                elapsed_seconds=elapsed_seconds,
+            )
+            if safety_decision:
+                summary = benchmark_engine.sample_summary(samples)
+                benchmark_results.update_candidate_result(
+                    BENCHMARK_RESULTS_PATH,
+                    session_id,
+                    int(sequence),
+                    {
+                        "status": "aborted",
+                        "safety_decision": safety_decision,
+                        "sample_summary": summary,
+                    },
+                )
+                try:
+                    restore_benchmark_miner(restore_profile)
+                    reason = f"candidate_aborted: {safety_decision}"
+                except Exception as restore_error:
+                    reason = (
+                        f"candidate_aborted_restore_failed: "
+                        f"{safety_decision}: {restore_error}"
+                    )
+                benchmark_sessions.transition_session(
+                    BENCHMARK_SESSIONS_PATH,
+                    session_id,
+                    "failed",
+                    reason=reason,
+                )
+                raise ValueError(f"Benchmark candidate aborted: {safety_decision}")
+
+            elapsed_seconds += interval
+            if elapsed_seconds < timing["test_seconds"]:
+                sleep_fn(interval)
+    except Exception:
+        raise
+
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    active_session = sessions.get(session_id)
+    if (
+        not isinstance(active_session, dict)
+        or active_session.get("state") not in benchmark_sessions.ACTIVE_STATES
+    ):
+        raise ValueError("Benchmark session is not active")
+
+    summary = benchmark_engine.sample_summary(samples)
+    row = benchmark_results.update_candidate_result(
+        BENCHMARK_RESULTS_PATH,
+        session_id,
+        int(sequence),
+        {
+            "status": "sampled",
+            "safety_decision": None,
+            "sample_summary": summary,
+        },
+    )
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "sequence": int(sequence),
+        "samples": len(samples),
+        "result": row,
+    }
 
 def collect_miners(miners):
     with ThreadPoolExecutor(max_workers=max(1, len(miners))) as executor:
@@ -844,18 +1635,14 @@ def get_thermal_limit(name):
 
 def read_miner(miner):
     data = {}
-    url = f"http://{miner['ip']}/api/system/info"
     try:
-        with urlopen(url, timeout=REQUEST_TIMEOUT) as response:
-            data = json.loads(response.read().decode("utf-8"))
-
-        temp = float(data.get("temp", 0))
-        freq = int(data.get("frequency", 0))
-
-        volt = get_voltage_mv(data, miner["type"])
-        vr_temp = get_vr_temp(data)
-        th = get_hashrate_th(data)
-        reject = get_reject_pct(data)
+        data = normalized_stats(miner, timeout=REQUEST_TIMEOUT)
+        temp = data["temp"]
+        freq = data["freq"]
+        volt = data["volt"]
+        vr_temp = data["vr_temp"]
+        th = data["th"]
+        reject = data["reject"]
         base_freq = miner.get("base_freq")
         hot_freq = miner.get("hot_freq")
         critical_freq = miner.get("critical_freq")
@@ -1409,6 +2196,11 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/miner-management/add",
                 "/api/miner-management/update",
                 "/api/miner-management/delete",
+                "/api/benchmark/start",
+                "/api/benchmark/prepare",
+                "/api/benchmark/cancel",
+                "/api/benchmark/cancel-active",
+                "/api/benchmark/run-candidate",
             )
             if self.path in protected_paths and not self.is_same_origin():
                 self.send_response(403)
@@ -1446,6 +2238,45 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     },
                 )
+                return
+
+            if self.path in (
+                "/api/benchmark/start",
+                "/api/benchmark/prepare",
+                "/api/benchmark/cancel",
+                "/api/benchmark/cancel-active",
+                "/api/benchmark/run-candidate",
+            ):
+                length = int(self.headers.get("Content-Length", 0))
+                if length <= 0 or length > 4096:
+                    self.send_json(400, {"ok": False, "error": "Invalid request size"})
+                    return
+
+                try:
+                    data = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self.send_json(400, {"ok": False, "error": "Invalid JSON body"})
+                    return
+
+                try:
+                    if self.path == "/api/benchmark/start":
+                        session = start_benchmark_session(data)
+                    elif self.path == "/api/benchmark/prepare":
+                        session = prepare_benchmark_session(data)
+                    elif self.path == "/api/benchmark/cancel":
+                        session = cancel_benchmark_session(data)
+                    elif self.path == "/api/benchmark/cancel-active":
+                        session = cancel_active_benchmark_session(data)
+                    else:
+                        session = run_benchmark_candidate(data)
+                except ValueError as error:
+                    self.send_json(400, {"ok": False, "error": str(error)})
+                    return
+                except LookupError as error:
+                    self.send_json(404, {"ok": False, "error": str(error)})
+                    return
+
+                self.send_json(200, {"ok": True, "session": session})
                 return
 
             if self.path == "/api/miner-discovery/scan":
@@ -1655,8 +2486,32 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if self.path == "/benchmark":
+            body = (APP_DIR / "static" / "benchmark.html").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path == "/api/thermal-settings":
             self.send_json(200, thermal_settings_payload())
+            return
+
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/benchmark/report":
+            session_id = (parse_qs(parsed.query).get("session_id") or [""])[0]
+            try:
+                self.send_json(200, benchmark_report_payload(session_id))
+            except ValueError as error:
+                self.send_json(400, {"ok": False, "error": str(error)})
+            except LookupError as error:
+                self.send_json(404, {"ok": False, "error": str(error)})
+            return
+
+        if self.path == "/api/benchmark":
+            self.send_json(200, benchmark_status_payload())
             return
 
         if self.path == "/api/miner-management":
@@ -1676,17 +2531,12 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        parsed = urlparse(self.path)
-        if parsed.path == "/public/page3":
+        if parsed.path in PAGE3_PUBLIC_PATHS:
             token = (parse_qs(parsed.query).get("token") or [""])[0]
-            expected = read_page3_public_token()
-            if not expected or not secrets.compare_digest(token, expected):
+            if not valid_page3_public_token(token):
                 self.send_json(403, {"ok": False, "error": "Forbidden"})
                 return
-            snapshot = get_dashboard_snapshot()
-            if snapshot is None:
-                snapshot = empty_dashboard_snapshot()
-            self.send_json(200, build_page3_payload(snapshot))
+            self.send_json(200, page3_public_payload())
             return
 
         if self.path == "/api/page3":
@@ -1762,6 +2612,12 @@ if __name__ == "__main__":
     print(f"Miner dashboard V2 running on port {PORT}")
     ensure_page3_public_token()
     startup_discovery()
+    try:
+        recovery = recover_benchmark_sessions()
+        if recovery.get("recovered"):
+            print(f"Benchmark recovery: {recovery}", flush=True)
+    except Exception as error:
+        print(f"Benchmark recovery error: {error}", flush=True)
     threading.Thread(target=collector_loop, name="miner-collector", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.serve_forever()

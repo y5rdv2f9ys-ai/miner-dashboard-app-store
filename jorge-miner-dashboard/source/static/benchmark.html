@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="apple-touch-icon" href="/static/icon.png">
+<link rel="icon" type="image/png" href="/static/icon.png">
+<meta name="theme-color" content="#09090b">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Benchmark Tuner</title>
+<link rel="stylesheet" href="/static/benchmark.css">
+</head>
+<body>
+<main class="settings-page">
+    <header>
+        <div>
+            <p class="eyebrow">MINER DASHBOARD</p>
+            <h1>Benchmark Tuner</h1>
+            <p class="subtitle">Prepare a miner, run one candidate at a time, and review benchmark results.</p>
+        </div>
+        <nav class="header-links">
+            <a class="back-link" href="/miners">Miners</a>
+            <a class="back-link" href="/thermal-settings">Thermal Settings</a>
+            <a class="back-link" href="/">Dashboard</a>
+        </nav>
+    </header>
+
+    <div id="message" class="message" hidden></div>
+
+    <section class="control-panel">
+        <div class="settings-grid">
+            <label>Miner
+                <select id="minerSelect"></select>
+            </label>
+            <label>Candidate
+                <select id="candidateSelect"></select>
+            </label>
+            <label>Session
+                <input id="sessionId" type="text" readonly>
+            </label>
+        </div>
+        <div class="form-actions">
+            <span id="statusLine" class="save-note">Loading benchmark state...</span>
+            <button id="prepareButton" class="save-button" type="button">Prepare</button>
+            <button id="runButton" class="save-button" type="button">Run Candidate</button>
+            <button id="cancelButton" class="delete-button" type="button">Cancel Active</button>
+            <button id="exportButton" type="button">Export Report</button>
+        </div>
+    </section>
+
+    <section class="summary-grid">
+        <article class="summary-card">
+            <h2>Baseline</h2>
+            <div id="baselineBox" class="metric-list"></div>
+        </article>
+        <article class="summary-card">
+            <h2>Profile</h2>
+            <div id="profileBox" class="metric-list"></div>
+        </article>
+        <article class="summary-card">
+            <h2>Results</h2>
+            <div id="resultBox" class="metric-list"></div>
+        </article>
+    </section>
+
+    <section class="results-panel">
+        <div class="panel-head">
+            <h2>Candidates</h2>
+            <button id="refreshButton" type="button">Refresh</button>
+        </div>
+        <div class="table-wrap">
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Freq</th>
+                        <th>Volt</th>
+                        <th>Status</th>
+                        <th>Safety</th>
+                        <th>TH</th>
+                        <th>Temp</th>
+                        <th>Eff</th>
+                    </tr>
+                </thead>
+                <tbody id="candidateRows">
+                    <tr><td colspan="8">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+<script src="/static/benchmark.js"></script>
+</body>
+</html>

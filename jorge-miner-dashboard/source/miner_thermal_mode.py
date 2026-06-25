@@ -5,10 +5,11 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-from miner_telemetry import get_hashrate_th, get_reject_pct, get_voltage_mv, get_vr_temp
+from miner_api import apply_settings, normalized_stats
+from miner_telemetry import get_hashrate_th, get_reject_pct
+from thermal_locks import active_lock_for, load_locks, lock_reason
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("MINER_DASHBOARD_DATA_DIR", APP_DIR))
@@ -17,6 +18,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 CHECK_INTERVAL = int(os.environ.get("THERMAL_CHECK_INTERVAL", "60"))
 REQUEST_TIMEOUT = 5
 CONFIG_PATH = DATA_DIR / "miners_v2.json"
+LOCKS_PATH = DATA_DIR / "thermal_locks.json"
 HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
 LOG_PATH = DATA_DIR / "miner_thermal_mode.log"
 TZ = ZoneInfo("America/Tegucigalpa")
@@ -45,17 +47,12 @@ def load_miners():
         return json.load(f)
 
 
-def request_json(url, method="GET", payload=None):
-    data = None
-    headers = {}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-
-    request = Request(url, data=data, headers=headers, method=method)
-    with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-        body = response.read().decode("utf-8").strip()
-    return json.loads(body) if body else {}
+def should_skip_for_lock(miner, locks):
+    lock = active_lock_for(miner["name"], locks)
+    if not lock:
+        return False
+    print(f"{miner['name']} | SKIP thermal lock ({lock_reason(lock)})", flush=True)
+    return True
 
 
 def human_diff(value):
@@ -73,20 +70,22 @@ def human_diff(value):
 
 
 def get_stats(miner):
-    data = request_json(f"http://{miner['ip']}/api/system/info")
-    stats = {
-        "temp": float(data.get("temp", 0)),
-        "vr_temp": get_vr_temp(data),
-        "freq": int(data.get("frequency", 0)),
-        "volt": get_voltage_mv(data, miner["type"]),
-    }
-    stats.update(data)
-    return stats
+    return normalized_stats(miner, timeout=REQUEST_TIMEOUT)
 
 
-def apply_profile(miner, frequency):
-    payload = {"frequency": frequency}
-    request_json(f"http://{miner['ip']}/api/system", method="PATCH", payload=payload)
+def state_profile(miner, state):
+    base_volt = miner.get("base_volt")
+    frequency = miner[f"{state}_freq"]
+    voltage = miner.get(f"{state}_volt", base_volt)
+    return int(frequency), int(voltage)
+
+
+def apply_profile(miner, frequency, voltage):
+    apply_settings(miner, frequency=frequency, voltage=voltage, timeout=REQUEST_TIMEOUT)
+
+
+def profile_matches(stats, frequency, voltage):
+    return stats["freq"] == frequency and stats["volt"] == voltage
 
 
 def log_stats(miner, stats):
@@ -121,24 +120,26 @@ def manage_miner(miner, states):
 
     try:
         if temp >= miner["critical_temp"]:
-            if frequency > miner["critical_freq"]:
+            target_freq, target_volt = state_profile(miner, "critical")
+            if not profile_matches(stats, target_freq, target_volt):
                 print(f"{name} | CRITICAL -> lowering", flush=True)
-                apply_profile(miner, miner["critical_freq"])
+                apply_profile(miner, target_freq, target_volt)
             else:
                 print(f"{name} | HOLD (critical)", flush=True)
             states[name] = "critical"
         elif temp >= miner["warn_temp"]:
-            if frequency > miner["hot_freq"]:
+            target_freq, target_volt = state_profile(miner, "hot")
+            if not profile_matches(stats, target_freq, target_volt):
                 print(f"{name} | HOT -> reducing", flush=True)
-                apply_profile(miner, miner["hot_freq"])
+                apply_profile(miner, target_freq, target_volt)
             else:
                 print(f"{name} | HOLD (hot)", flush=True)
             states[name] = "hot"
         elif temp <= miner["recover_temp"] and (
-            current_state != "base" or frequency < miner["base_freq"]
+            current_state != "base" or not profile_matches(stats, *state_profile(miner, "base"))
         ):
             print(f"{name} | COOL -> restoring", flush=True)
-            apply_profile(miner, miner["base_freq"])
+            apply_profile(miner, *state_profile(miner, "base"))
             states[name] = "base"
         elif frequency < miner["base_freq"]:
             print(f"{name} | HOLD (reduced)", flush=True)
@@ -160,8 +161,9 @@ def main():
             time.sleep(CHECK_INTERVAL)
             continue
 
+        locks = load_locks(LOCKS_PATH)
         for miner in miners:
-            if miner.get("enabled", True):
+            if miner.get("enabled", True) and not should_skip_for_lock(miner, locks):
                 manage_miner(miner, states)
         HEARTBEAT_PATH.touch()
         time.sleep(CHECK_INTERVAL)

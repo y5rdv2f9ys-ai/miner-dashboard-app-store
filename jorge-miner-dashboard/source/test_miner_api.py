@@ -1,0 +1,68 @@
+import unittest
+from unittest.mock import patch
+
+import miner_api
+
+
+class MinerApiTests(unittest.TestCase):
+    def test_settings_payload_uses_device_voltage_shape(self):
+        self.assertEqual(
+            miner_api.settings_payload("axeos", frequency=600, voltage=1150),
+            {"frequency": 600, "coreVoltage": 1150},
+        )
+        self.assertEqual(
+            miner_api.settings_payload("nerdos", frequency=700, voltage=1220),
+            {"frequency": 700, "voltage": 12200},
+        )
+
+    def test_apply_settings_patches_system_endpoint(self):
+        miner = {"type": "nerdos", "ip": "192.168.1.115"}
+        with patch.object(miner_api, "request_json", return_value={"ok": True}) as request:
+            result = miner_api.apply_settings(miner, frequency=635, voltage=1155, timeout=3)
+
+        self.assertEqual(result, {"ok": True})
+        request.assert_called_once_with(
+            "http://192.168.1.115/api/system",
+            method="PATCH",
+            payload={"frequency": 635, "voltage": 11550},
+            timeout=3,
+        )
+
+    def test_normalized_stats_preserves_raw_fields(self):
+        miner = {"type": "axeos", "ip": "192.168.1.26"}
+        info = {
+            "temp": 61.5,
+            "frequency": 600,
+            "coreVoltage": 1150,
+            "hashRate": 1200,
+            "sharesAccepted": 10,
+            "sharesRejected": 1,
+            "bestDiff": "42G",
+        }
+        with patch.object(miner_api, "get_system_info", return_value=info):
+            stats = miner_api.normalized_stats(miner, timeout=3)
+
+        self.assertEqual(stats["temp"], 61.5)
+        self.assertEqual(stats["freq"], 600)
+        self.assertEqual(stats["volt"], 1150)
+        self.assertEqual(stats["th"], 1.2)
+        self.assertAlmostEqual(stats["reject"], 9.0909090909)
+        self.assertEqual(stats["bestDiff"], "42G")
+
+    def test_normalized_stats_keeps_normalized_fields_over_raw_strings(self):
+        miner = {"type": "axeos", "ip": "192.168.1.26"}
+        info = {
+            "temp": "61.5",
+            "frequency": "600",
+            "coreVoltage": "1150",
+        }
+        with patch.object(miner_api, "get_system_info", return_value=info):
+            stats = miner_api.normalized_stats(miner, timeout=3)
+
+        self.assertEqual(stats["temp"], 61.5)
+        self.assertEqual(stats["freq"], 600)
+        self.assertEqual(stats["volt"], 1150)
+
+
+if __name__ == "__main__":
+    unittest.main()

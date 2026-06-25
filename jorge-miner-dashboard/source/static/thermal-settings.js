@@ -25,6 +25,10 @@ function numberInput(field, label, hint, value, step = '1') {
         </label>`;
 }
 
+function stateVoltage(miner, field) {
+    return miner[field] ?? miner.base_volt;
+}
+
 function renderMiner(miner) {
     const card = document.createElement('article');
     card.className = 'miner-card';
@@ -50,14 +54,17 @@ function renderMiner(miner) {
             </div>
             <div class="settings-grid">
                 ${numberInput('base_freq', 'Base frequency', 'Normal operating MHz', miner.base_freq)}
+                ${numberInput('base_volt', 'Base voltage', 'Normal operating mV', miner.base_volt)}
                 ${numberInput('hot_freq', 'Hot frequency', 'MHz at warning temperature', miner.hot_freq)}
+                ${numberInput('hot_volt', 'Hot voltage', 'mV at warning temperature', stateVoltage(miner, 'hot_volt'))}
                 ${numberInput('critical_freq', 'Critical frequency', 'MHz at critical temperature', miner.critical_freq)}
+                ${numberInput('critical_volt', 'Critical voltage', 'mV at critical temperature', stateVoltage(miner, 'critical_volt'))}
                 ${numberInput('recover_temp', 'Recovery temperature', 'Restore base frequency at or below °C', miner.recover_temp, '0.1')}
                 ${numberInput('warn_temp', 'Warning temperature', 'Apply hot frequency at or above °C', miner.warn_temp, '0.1')}
                 ${numberInput('critical_temp', 'Critical temperature', 'Apply critical frequency at or above °C', miner.critical_temp, '0.1')}
             </div>
             <div class="form-actions">
-                <span class="save-note">Required: critical ≤ hot ≤ base and recovery &lt; warning &lt; critical.</span>
+                <span class="save-note">Required: critical ≤ hot ≤ base frequency and recovery &lt; warning &lt; critical.</span>
                 <button class="save-button" type="submit">Save Settings</button>
             </div>
         </form>`;
@@ -81,8 +88,11 @@ async function saveSettings(event) {
         name: data.name,
         enabled: form.elements.enabled.checked,
         base_freq: Number(data.base_freq),
+        base_volt: Number(data.base_volt),
         hot_freq: Number(data.hot_freq),
+        hot_volt: Number(data.hot_volt),
         critical_freq: Number(data.critical_freq),
+        critical_volt: Number(data.critical_volt),
         recover_temp: Number(data.recover_temp),
         warn_temp: Number(data.warn_temp),
         critical_temp: Number(data.critical_temp),
