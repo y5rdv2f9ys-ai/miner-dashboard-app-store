@@ -804,6 +804,32 @@ class ThermalSettingsTests(unittest.TestCase):
             1,
         )
         self.assertEqual(row["status"], "aborted")
+
+    def test_sample_benchmark_candidate_prewrite_abort_releases_lock(self):
+        self.guarded_write_fixture()
+
+        with patch.object(app_v2, "apply_settings") as apply:
+            with self.assertRaisesRegex(ValueError, "CHIP_TEMP_EXCEEDED"):
+                app_v2.sample_benchmark_candidate(
+                    "bench_001",
+                    1,
+                    sample_provider=lambda: {"temp": 69, "th": 1.0},
+                    sleep_fn=lambda seconds: None,
+                    max_samples=1,
+                )
+
+        apply.assert_not_called()
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertEqual(session["state"], "failed")
+        self.assertIn("CHIP_TEMP_EXCEEDED", session["reason"])
+        restore = json.loads(self.restore_path.read_text())["bench_001"]
+        self.assertEqual(restore["status"], "failed")
+        self.assertEqual(json.loads(self.locks_path.read_text()), {})
+        row = app_v2.benchmark_results.candidate_result(
+            self.results_path,
+            "bench_001",
+            1,
+        )
         self.assertEqual(row["safety_decision"], "CHIP_TEMP_EXCEEDED")
 
     def test_run_benchmark_candidate_requires_valid_request(self):

@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Miner Dashboard Test
-version: "1.2.15"
+version: "1.2.16"
 tagline: Test the Umbrel-native miner dashboard
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
@@ -25,5 +25,6 @@ torOnly: false
 submitter: Jorge
 submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 releaseNotes: >-
-  Raises the NerdOctAxe benchmark power safety cutoff so below-base candidates
-  are not blocked by normal baseline power draw.
+  Fixes NerdOS benchmark input voltage handling, releases benchmark locks after
+  prewrite safety aborts, and tolerates NerdOS live frequency/voltage drift when
+  matching thermal profiles.

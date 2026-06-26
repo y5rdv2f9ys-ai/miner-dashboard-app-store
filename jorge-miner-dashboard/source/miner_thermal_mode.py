@@ -16,6 +16,8 @@ DATA_DIR = Path(os.environ.get("MINER_DASHBOARD_DATA_DIR", APP_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 CHECK_INTERVAL = int(os.environ.get("THERMAL_CHECK_INTERVAL", "60"))
+FREQUENCY_TOLERANCE_MHZ = int(os.environ.get("THERMAL_FREQUENCY_TOLERANCE_MHZ", "10"))
+VOLTAGE_TOLERANCE_MV = int(os.environ.get("THERMAL_VOLTAGE_TOLERANCE_MV", "75"))
 REQUEST_TIMEOUT = 5
 CONFIG_PATH = DATA_DIR / "miners_v2.json"
 LOCKS_PATH = DATA_DIR / "thermal_locks.json"
@@ -85,7 +87,10 @@ def apply_profile(miner, frequency, voltage):
 
 
 def profile_matches(stats, frequency, voltage):
-    return stats["freq"] == frequency and stats["volt"] == voltage
+    return (
+        abs(float(stats["freq"]) - float(frequency)) <= FREQUENCY_TOLERANCE_MHZ
+        and abs(float(stats["volt"]) - float(voltage)) <= VOLTAGE_TOLERANCE_MV
+    )
 
 
 def log_stats(miner, stats):

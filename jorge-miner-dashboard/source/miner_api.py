@@ -1,7 +1,13 @@
 import json
 from urllib.request import Request, urlopen
 
-from miner_telemetry import get_hashrate_th, get_reject_pct, get_voltage_mv, get_vr_temp
+from miner_telemetry import (
+    get_hashrate_th,
+    get_input_voltage,
+    get_reject_pct,
+    get_voltage_mv,
+    get_vr_temp,
+)
 
 
 def request_json(url, method="GET", payload=None, timeout=5):
@@ -22,9 +28,7 @@ def get_system_info(ip, timeout=5):
 
 
 def voltage_payload_field(miner_type, voltage):
-    if str(miner_type).lower() == "axeos":
-        return {"coreVoltage": int(voltage)}
-    return {"voltage": int(voltage) * 10}
+    return {"coreVoltage": int(voltage)}
 
 
 def settings_payload(miner_type, frequency=None, voltage=None):
@@ -53,6 +57,7 @@ def normalized_stats(miner, timeout=5):
         "vr_temp": get_vr_temp(data),
         "freq": int(data.get("frequency", 0)),
         "volt": get_voltage_mv(data, miner["type"]),
+        "input_voltage": get_input_voltage(data),
         "th": get_hashrate_th(data),
         "reject": get_reject_pct(data),
     }

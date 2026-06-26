@@ -31,6 +31,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PORT = int(os.environ.get("MINER_DASHBOARD_PORT", "5056"))
 REQUEST_TIMEOUT = 3
+FREQUENCY_TOLERANCE_MHZ = int(os.environ.get("THERMAL_FREQUENCY_TOLERANCE_MHZ", "10"))
 TZ = ZoneInfo("America/Tegucigalpa")
 LOG_PATH = DATA_DIR / "miner_thermal_mode.log"
 HISTORY_PATH = DATA_DIR / "history_v2.csv"
@@ -1400,7 +1401,39 @@ def sample_benchmark_candidate(
         lambda: normalized_stats(miner, timeout=REQUEST_TIMEOUT)
     )
     prewrite_sample = sample_provider()
-    guarded_benchmark_setting_write(session_id, sequence, prewrite_sample)
+    try:
+        guarded_benchmark_setting_write(session_id, sequence, prewrite_sample)
+    except Exception as error:
+        now = datetime.now(TZ).isoformat()
+        reason = f"candidate_prewrite_aborted: {error}"
+        try:
+            benchmark_restore.mark_restore_profile(
+                BENCHMARK_RESTORE_PATH,
+                session_id,
+                "failed",
+                completed_at=now,
+                reason=reason,
+            )
+        except Exception:
+            pass
+        try:
+            thermal_locks.release_lock(
+                THERMAL_LOCKS_PATH,
+                session.get("miner", ""),
+                session_id=session_id,
+            )
+        except Exception:
+            pass
+        try:
+            benchmark_sessions.transition_session(
+                BENCHMARK_SESSIONS_PATH,
+                session_id,
+                "failed",
+                reason=reason,
+            )
+        except Exception:
+            pass
+        raise
 
     timing = profile["timing"]
     interval = int(timing["sample_interval_seconds"])
@@ -1649,11 +1682,11 @@ def read_miner(miner):
 
         if th <= 0:
             status = "OFFLINE"
-        elif critical_freq and freq <= critical_freq:
+        elif critical_freq and freq <= critical_freq + FREQUENCY_TOLERANCE_MHZ:
             status = "MAX COOLING"
-        elif hot_freq and freq <= hot_freq:
+        elif hot_freq and freq <= hot_freq + FREQUENCY_TOLERANCE_MHZ:
             status = "COOLING"
-        elif base_freq and freq < base_freq:
+        elif base_freq and freq < base_freq - FREQUENCY_TOLERANCE_MHZ:
             status = "HOLDING"
         else:
             status = "STABLE"

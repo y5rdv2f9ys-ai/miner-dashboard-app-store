@@ -12,7 +12,7 @@ class MinerApiTests(unittest.TestCase):
         )
         self.assertEqual(
             miner_api.settings_payload("nerdos", frequency=700, voltage=1220),
-            {"frequency": 700, "voltage": 12200},
+            {"frequency": 700, "coreVoltage": 1220},
         )
 
     def test_apply_settings_patches_system_endpoint(self):
@@ -24,9 +24,26 @@ class MinerApiTests(unittest.TestCase):
         request.assert_called_once_with(
             "http://192.168.1.115/api/system",
             method="PATCH",
-            payload={"frequency": 635, "voltage": 11550},
+            payload={"frequency": 635, "coreVoltage": 1155},
             timeout=3,
         )
+
+    def test_normalized_stats_keeps_core_and_input_voltage_separate(self):
+        miner = {"type": "nerdos", "ip": "192.0.2.10"}
+        data = {
+            "temp": 55,
+            "frequency": 635,
+            "coreVoltage": 1155,
+            "voltage": 11906.25,
+            "hashRate": 9000,
+        }
+
+        with patch.object(miner_api, "get_system_info", return_value=data):
+            result = miner_api.normalized_stats(miner, timeout=3)
+
+        self.assertEqual(result["volt"], 1155)
+        self.assertEqual(result["input_voltage"], 11.90625)
+        self.assertEqual(result["voltage"], 11906.25)
 
     def test_normalized_stats_preserves_raw_fields(self):
         miner = {"type": "axeos", "ip": "192.168.1.26"}

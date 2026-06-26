@@ -12,6 +12,8 @@ class BenchmarkProfilesTests(unittest.TestCase):
 
         self.assertEqual(profile["id"], "axeos_bitaxe")
         self.assertEqual(profile["safety"]["max_chip_temp"], 69)
+        self.assertEqual(profile["safety"]["min_input_voltage"], 4.8)
+        self.assertEqual(profile["safety"]["max_input_voltage"], 5.5)
 
     def test_selects_nerdqaxe_profile_from_name(self):
         profile = benchmark_profiles.select_profile(
@@ -22,6 +24,8 @@ class BenchmarkProfilesTests(unittest.TestCase):
         self.assertEqual(profile["id"], "nerdos_nerdqaxe")
         self.assertEqual(profile["frequency"]["step"], 20)
         self.assertEqual(profile["safety"]["max_chip_temp"], 67)
+        self.assertEqual(profile["safety"]["min_input_voltage"], 11.6)
+        self.assertEqual(profile["safety"]["max_input_voltage"], 12.5)
 
     def test_selects_nerdoctaxe_profile_before_generic_nerdos(self):
         profile = benchmark_profiles.select_profile(
@@ -33,6 +37,8 @@ class BenchmarkProfilesTests(unittest.TestCase):
         self.assertEqual(profile["frequency"]["step"], 5)
         self.assertEqual(profile["safety"]["max_chip_temp"], 74)
         self.assertEqual(profile["safety"]["max_power_watts"], 220)
+        self.assertEqual(profile["safety"]["min_input_voltage"], 11.6)
+        self.assertEqual(profile["safety"]["max_input_voltage"], 12.5)
 
     def test_unknown_nerdos_defaults_to_nerdqaxe_profile(self):
         profile = benchmark_profiles.select_profile(

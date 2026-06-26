@@ -110,7 +110,7 @@ def safety_failure(profile, sample, api_failures=0, zero_hashrate_seconds=0, ela
     if watts is not None and watts >= safety["max_power_watts"]:
         return "POWER_EXCEEDED"
 
-    input_voltage = sample.get("input_voltage", sample.get("voltage"))
+    input_voltage = sample.get("input_voltage")
     if input_voltage is not None:
         value = float(input_voltage)
         if value > 100:

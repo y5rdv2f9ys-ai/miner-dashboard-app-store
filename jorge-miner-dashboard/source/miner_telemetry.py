@@ -21,9 +21,34 @@ def get_reject_pct(data):
 
 
 def get_voltage_mv(data, miner_type):
-    if miner_type == "axeos":
-        return int(data.get("coreVoltage", 0))
-    return int(round(float(data.get("voltage", 0)) / 10))
+    for key in ("coreVoltage", "coreVoltageActual", "defaultCoreVoltage"):
+        value = data.get(key)
+        if value in (None, ""):
+            continue
+        return int(round(float(value)))
+    return 0
+
+
+def get_input_voltage(data):
+    for key in (
+        "inputVoltage",
+        "input_voltage",
+        "voltage",
+        "voltageIn",
+        "voltage_in",
+        "vin",
+        "vIn",
+        "supplyVoltage",
+        "supply_voltage",
+        "psuVoltage",
+        "psu_voltage",
+    ):
+        value = data.get(key)
+        if value in (None, ""):
+            continue
+        value = float(value)
+        return value / 1000.0 if value > 100 else value
+    return None
 
 
 def get_vr_temp(data):

@@ -67,7 +67,7 @@ class BenchmarkEngineTests(unittest.TestCase):
             "CHIP_TEMP_EXCEEDED",
         )
 
-    def test_safety_failure_detects_vr_temp_power_and_input_voltage(self):
+    def test_safety_failure_detects_vr_temp_power_and_nerdos_input_voltage(self):
         profile = benchmark_profiles.get_profile("nerdos_nerdqaxe")
 
         self.assertEqual(
@@ -79,8 +79,34 @@ class BenchmarkEngineTests(unittest.TestCase):
             "POWER_EXCEEDED",
         )
         self.assertEqual(
-            benchmark_engine.safety_failure(profile, {"temp": 60, "voltage": 4.7}),
+            benchmark_engine.safety_failure(profile, {"temp": 60, "input_voltage": 11.5}),
             "INPUT_VOLTAGE_LOW",
+        )
+        self.assertIsNone(
+            benchmark_engine.safety_failure(profile, {"temp": 60, "input_voltage": 12.1})
+        )
+        self.assertEqual(
+            benchmark_engine.safety_failure(profile, {"temp": 60, "input_voltage": 12.6}),
+            "INPUT_VOLTAGE_HIGH",
+        )
+
+        self.assertIsNone(
+            benchmark_engine.safety_failure(profile, {"temp": 60, "voltage": 11890})
+        )
+
+    def test_safety_failure_uses_five_volt_input_limits_for_axeos(self):
+        profile = benchmark_profiles.get_profile("axeos_bitaxe")
+
+        self.assertEqual(
+            benchmark_engine.safety_failure(profile, {"temp": 60, "input_voltage": 4.7}),
+            "INPUT_VOLTAGE_LOW",
+        )
+        self.assertIsNone(
+            benchmark_engine.safety_failure(profile, {"temp": 60, "input_voltage": 5.4})
+        )
+        self.assertEqual(
+            benchmark_engine.safety_failure(profile, {"temp": 60, "input_voltage": 5.6}),
+            "INPUT_VOLTAGE_HIGH",
         )
 
     def test_safety_failure_detects_api_zero_hashrate_and_watchdog_limits(self):
@@ -117,7 +143,7 @@ class BenchmarkEngineTests(unittest.TestCase):
                     "temp": 60,
                     "vr_temp": 70,
                     "power": 20,
-                    "voltage": 5.0,
+                    "input_voltage": 5.0,
                     "th": 1.1,
                 },
             )
