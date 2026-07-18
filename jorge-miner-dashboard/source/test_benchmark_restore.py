@@ -71,6 +71,26 @@ class BenchmarkRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(LookupError, "not found"):
             benchmark_restore.mark_restore_profile(self.path, "missing", "failed")
 
+    def test_mark_recovery_required_persists_failure_and_attempt_count(self):
+        benchmark_restore.save_restore_profile(self.path, "bench_001", self.miner, self.stats)
+
+        first = benchmark_restore.mark_recovery_required(
+            self.path, "bench_001", "restore timed out"
+        )
+        second = benchmark_restore.mark_recovery_required(
+            self.path, "bench_001", "restore timed out again"
+        )
+
+        self.assertEqual(second["status"], "failed")
+        self.assertTrue(second["recovery_required"])
+        self.assertEqual(second["restore_attempts"], 2)
+        self.assertEqual(second["last_restore_error"], "restore timed out again")
+        self.assertEqual(
+            [profile["session_id"] for profile in benchmark_restore.recovery_required_profiles(self.path)],
+            ["bench_001"],
+        )
+        self.assertEqual(first["restore_attempts"], 1)
+
     def test_load_restore_profiles_handles_missing_or_invalid_files(self):
         self.assertEqual(benchmark_restore.load_restore_profiles(self.path), {})
         self.path.write_text("[]")

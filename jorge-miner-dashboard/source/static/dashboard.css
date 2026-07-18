@@ -142,6 +142,7 @@ h1 {
 .status.HOLDING { background: #6b5b1a; color: #fff2a8; }
 .status.COOLING { background: #854d0e; }
 .status.MAX-COOLING { background: #991b1b; }
+.status.BENCHMARK { background: #0f766e; }
 .status.OFFLINE { background: #444; }
 
 .legend {
@@ -503,6 +504,7 @@ svg {
 .thermal-strip .holding { color: #facc15; font-weight: 600; }
 .thermal-strip .cooling { color: #f59e0b; font-weight: 600; }
 .thermal-strip .maxcool { color: #ef4444; font-weight: 600; }
+.thermal-strip .benchmark { color: #2dd4bf; font-weight: 600; }
 
 .perf-low {
     color: #ff8c00 !important;
@@ -2227,6 +2229,10 @@ svg {
 
 .mobile-card.MAX-COOLING {
     border-color: #ef4444 !important;
+}
+
+.mobile-card.BENCHMARK {
+    border-color: #2dd4bf !important;
 }
 
 

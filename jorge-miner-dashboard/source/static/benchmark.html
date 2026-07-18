@@ -26,6 +26,19 @@
 
     <div id="message" class="message" hidden></div>
 
+    <section id="recoveryPanel" class="recovery-panel" hidden>
+        <div>
+            <p class="eyebrow">ACTION REQUIRED</p>
+            <h2>Miner restore recovery is pending</h2>
+            <p id="recoveryText" class="recovery-text"></p>
+            <div id="recoveryDetails" class="metric-list"></div>
+        </div>
+        <div class="recovery-actions">
+            <button id="retryRestoreButton" class="save-button" type="button">Retry Restore</button>
+            <button id="confirmManualRestoreButton" class="delete-button" type="button">I Restored It Manually</button>
+        </div>
+    </section>
+
     <section class="control-panel">
         <div class="settings-grid">
             <label>Miner
@@ -59,6 +72,10 @@
         <article class="summary-card">
             <h2>Results</h2>
             <div id="resultBox" class="metric-list"></div>
+        </article>
+        <article class="summary-card">
+            <h2>Timers</h2>
+            <div id="timerBox" class="metric-list"></div>
         </article>
     </section>
 

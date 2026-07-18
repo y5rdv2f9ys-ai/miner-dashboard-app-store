@@ -56,6 +56,7 @@ def planned_result(session_id, candidate, created_at=None):
         "sample_summary": empty_sample_summary(),
         "created_at": created_at or utc_now(),
         "updated_at": created_at or utc_now(),
+        "applied_at": None,
     }
 
 

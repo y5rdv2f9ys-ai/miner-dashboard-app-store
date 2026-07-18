@@ -8,9 +8,15 @@ const runButton = document.getElementById('runButton');
 const cancelButton = document.getElementById('cancelButton');
 const exportButton = document.getElementById('exportButton');
 const refreshButton = document.getElementById('refreshButton');
+const recoveryPanel = document.getElementById('recoveryPanel');
+const recoveryText = document.getElementById('recoveryText');
+const recoveryDetails = document.getElementById('recoveryDetails');
+const retryRestoreButton = document.getElementById('retryRestoreButton');
+const confirmManualRestoreButton = document.getElementById('confirmManualRestoreButton');
 const baselineBox = document.getElementById('baselineBox');
 const profileBox = document.getElementById('profileBox');
 const resultBox = document.getElementById('resultBox');
+const timerBox = document.getElementById('timerBox');
 const candidateRows = document.getElementById('candidateRows');
 
 let state = {
@@ -18,6 +24,7 @@ let state = {
     benchmark: null,
     report: null,
     pollTimer: null,
+    countdownTimer: null,
 };
 
 function escapeHtml(value) {
@@ -57,6 +64,53 @@ function metric(label, value) {
     return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? 'NA')}</strong></div>`;
 }
 
+function parseTime(value) {
+    const time = Date.parse(value || '');
+    return Number.isFinite(time) ? time : null;
+}
+
+function formatDuration(seconds) {
+    if (seconds == null || !Number.isFinite(seconds)) return 'NA';
+    seconds = Math.max(0, Math.ceil(seconds));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    if (hours) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+    return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function timingPayload() {
+    const session = activeSession();
+    const report = activeReport();
+    const timing = session?.benchmark_plan?.timing || report?.profile?.timing || {};
+    const warmup = Number(timing.warmup_seconds || 0);
+    const test = Number(timing.test_seconds || 0);
+    const candidate = Number(timing.candidate_seconds || (warmup + test) || 0);
+    return {
+        warmup_seconds: warmup,
+        test_seconds: test,
+        candidate_seconds: candidate,
+    };
+}
+
+function activeCandidateRow() {
+    const report = activeReport();
+    const rows = report?.results || [];
+    const runner = activeRunner();
+    if (runner?.sequence) {
+        const runnerRow = rows.find(row => Number(row.sequence) === Number(runner.sequence));
+        if (runnerRow) return runnerRow;
+    }
+    return rows.find(row => row.status === 'applied') || null;
+}
+
+function candidateRemainingSeconds(row, candidateSeconds, now = Date.now()) {
+    if (!row || row.status !== 'applied' || !candidateSeconds) return null;
+    const appliedAt = parseTime(row.applied_at || row.updated_at);
+    if (!appliedAt) return null;
+    return candidateSeconds - ((now - appliedAt) / 1000);
+}
+
 function activeSession() {
     return state.benchmark?.active || null;
 }
@@ -73,6 +127,29 @@ function activeRunner() {
 
 function runnerIsActive() {
     return activeRunner()?.status === 'running';
+}
+
+function pendingRecoveries() {
+    return state.benchmark?.recovery_required || [];
+}
+
+function renderRecovery() {
+    const recoveries = pendingRecoveries();
+    const recovery = recoveries[0];
+    recoveryPanel.hidden = !recovery;
+    if (!recovery) return;
+    const restore = recovery.restore || {};
+    const extra = recoveries.length > 1 ? ` ${recoveries.length - 1} additional recovery item(s) are also pending.` : '';
+    recoveryText.textContent = `Thermal management remains locked for this miner until its saved settings are restored and confirmed.${extra}`;
+    recoveryDetails.innerHTML = [
+        metric('Miner', recovery.miner),
+        metric('Session', recovery.session_id),
+        metric('Restore target', `${restore.frequency ?? 'NA'} MHz / ${restore.voltage ?? 'NA'} mV`),
+        metric('Last error', recovery.last_restore_error || recovery.reason),
+        metric('Attempts', recovery.restore_attempts || 0),
+    ].join('');
+    retryRestoreButton.dataset.sessionId = recovery.session_id || '';
+    confirmManualRestoreButton.dataset.sessionId = recovery.session_id || '';
 }
 
 function renderMiners() {
@@ -122,6 +199,29 @@ function renderSummary() {
         metric('Sampled', counts.sampled || 0),
         metric('Aborted', counts.aborted || 0),
     ].join('');
+    renderTimers();
+}
+
+function renderTimers() {
+    const report = activeReport();
+    const rows = report?.results || [];
+    const timing = timingPayload();
+    const candidateSeconds = timing.candidate_seconds;
+    const current = activeCandidateRow();
+    const currentRemaining = candidateRemainingSeconds(current, candidateSeconds);
+    const plannedCount = rows.filter(row => row.status === 'planned').length;
+    const overallRemaining = candidateSeconds
+        ? Math.max(0, (currentRemaining || 0)) + (plannedCount * candidateSeconds)
+        : null;
+
+    timerBox.innerHTML = [
+        metric('Candidate', current?.status === 'applied' ? formatDuration(currentRemaining) : 'Idle'),
+        metric('Overall est', activeSession() ? formatDuration(overallRemaining) : 'Idle'),
+        metric('Per candidate', candidateSeconds ? formatDuration(candidateSeconds) : 'NA'),
+        metric('Warmup + test', timing.warmup_seconds || timing.test_seconds
+            ? `${formatDuration(timing.warmup_seconds)} + ${formatDuration(timing.test_seconds)}`
+            : 'NA'),
+    ].join('');
 }
 
 function candidateLabel(row) {
@@ -167,7 +267,7 @@ function renderCandidates() {
 function renderControls() {
     const session = activeSession();
     const running = runnerIsActive();
-    prepareButton.disabled = Boolean(session);
+    prepareButton.disabled = Boolean(session) || pendingRecoveries().length > 0;
     runButton.disabled = !session || !candidateSelect.value || running;
     cancelButton.disabled = !session;
     exportButton.disabled = !activeReport();
@@ -175,9 +275,47 @@ function renderControls() {
 
 function render() {
     renderMiners();
+    renderRecovery();
     renderSummary();
     renderCandidates();
     renderControls();
+    if (state.countdownTimer) clearInterval(state.countdownTimer);
+    if (activeSession()) {
+        state.countdownTimer = setInterval(renderTimers, 1000);
+    }
+}
+
+async function retryRestore() {
+    const sessionId = retryRestoreButton.dataset.sessionId;
+    if (!sessionId) return;
+    retryRestoreButton.disabled = true;
+    try {
+        await postJson('/api/benchmark/retry-restore', {session_id: sessionId});
+        showMessage('Saved miner settings were restored and the thermal lock was released.', 'success');
+        await loadState();
+    } catch (error) {
+        showMessage(`Restore retry failed: ${error.message}`, 'error');
+        await loadState();
+    } finally {
+        retryRestoreButton.disabled = false;
+    }
+}
+
+async function confirmManualRestore() {
+    const sessionId = confirmManualRestoreButton.dataset.sessionId;
+    if (!sessionId) return;
+    if (!confirm('Confirm that you manually restored the exact saved frequency and voltage shown above? This will release the thermal lock.')) return;
+    confirmManualRestoreButton.disabled = true;
+    try {
+        await postJson('/api/benchmark/confirm-manual-restore', {session_id: sessionId});
+        showMessage('Manual restore confirmed and thermal management resumed.', 'success');
+        await loadState();
+    } catch (error) {
+        showMessage(error.message, 'error');
+        await loadState();
+    } finally {
+        confirmManualRestoreButton.disabled = false;
+    }
 }
 
 async function loadState() {
@@ -273,5 +411,7 @@ runButton.addEventListener('click', runCandidate);
 cancelButton.addEventListener('click', cancelActive);
 exportButton.addEventListener('click', exportReport);
 refreshButton.addEventListener('click', loadState);
+retryRestoreButton.addEventListener('click', retryRestore);
+confirmManualRestoreButton.addEventListener('click', confirmManualRestore);
 candidateSelect.addEventListener('change', renderCandidates);
 loadState().catch(error => showMessage(error.message, 'error'));

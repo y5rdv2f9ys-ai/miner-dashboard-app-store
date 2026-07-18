@@ -283,6 +283,7 @@ class ThermalSettingsTests(unittest.TestCase):
         self.assertEqual(plan["mode"], "dry_run")
         self.assertFalse(plan["writes_enabled"])
         self.assertGreater(plan["candidate_count"], 0)
+        self.assertEqual(plan["timing"]["candidate_seconds"], 780)
         self.assertTrue(plan["first_candidate"]["is_below_base"])
         self.assertLess(plan["first_candidate"]["frequency"], self.original["base_freq"])
         self.assertLess(plan["first_candidate"]["voltage"], self.original["base_volt"])
@@ -390,6 +391,7 @@ class ThermalSettingsTests(unittest.TestCase):
         planned = json.loads(self.results_path.read_text())[session["session_id"]]
         self.assertEqual(len(planned), session["benchmark_plan"]["candidate_count"])
         self.assertEqual(planned[0]["status"], "planned")
+        self.assertEqual(session["benchmark_plan"]["timing"]["candidate_seconds"], 780)
 
     def test_prepare_benchmark_session_allows_run_candidate_route(self):
         with patch.object(
@@ -606,6 +608,28 @@ class ThermalSettingsTests(unittest.TestCase):
         self.assertEqual(profile["status"], "restored")
         self.assertEqual(json.loads(self.locks_path.read_text()), {})
 
+    def test_recover_benchmark_sessions_preserves_lock_when_restore_fails(self):
+        self.interrupted_session("benchmarking", settings_written=True)
+        self.restore_profile()
+        self.thermal_lock()
+
+        with patch.object(app_v2, "apply_settings", side_effect=TimeoutError("offline")):
+            recovery = app_v2.recover_benchmark_sessions()
+
+        self.assertEqual(recovery["reason"], "manual_cleanup_required")
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertEqual(session["state"], "failed")
+        self.assertTrue(session["recovery_required"])
+        profile = json.loads(self.restore_path.read_text())["bench_001"]
+        self.assertEqual(profile["status"], "failed")
+        self.assertTrue(profile["recovery_required"])
+        self.assertIn("offline", profile["last_restore_error"])
+        self.assertIn("TestMiner", json.loads(self.locks_path.read_text()))
+
+        second_recovery = app_v2.recover_benchmark_sessions()
+        self.assertEqual(second_recovery["reason"], "manual_cleanup_required")
+        self.assertEqual(second_recovery["session_id"], "bench_001")
+
     def test_benchmark_status_payload_includes_profiles(self):
         payload = app_v2.benchmark_status_payload()
 
@@ -618,6 +642,58 @@ class ThermalSettingsTests(unittest.TestCase):
             "axeos_bitaxe",
             [profile["id"] for profile in payload["profiles"]],
         )
+
+    def test_cleanup_benchmark_reports_prunes_matching_result_and_restore_records(self):
+        old_session = {
+            "session_id": "old_done",
+            "miner": "TestMiner",
+            "state": "completed",
+            "created_at": "2026-06-01T00:00:00+00:00",
+            "updated_at": "2026-06-01T01:00:00+00:00",
+            "completed_at": "2026-06-01T01:00:00+00:00",
+        }
+        recent_session = {
+            "session_id": "recent_done",
+            "miner": "TestMiner",
+            "state": "canceled",
+            "created_at": "2026-06-25T00:00:00+00:00",
+            "updated_at": "2026-06-25T01:00:00+00:00",
+            "completed_at": "2026-06-25T01:00:00+00:00",
+        }
+        app_v2.benchmark_sessions.write_sessions(
+            self.benchmark_path,
+            {
+                "old_done": old_session,
+                "recent_done": recent_session,
+            },
+        )
+        app_v2.benchmark_results.write_results(
+            self.results_path,
+            {
+                "old_done": [{"session_id": "old_done"}],
+                "recent_done": [{"session_id": "recent_done"}],
+            },
+        )
+        app_v2.benchmark_restore.write_restore_profiles(
+            self.restore_path,
+            {
+                "old_done": {"session_id": "old_done"},
+                "recent_done": {"session_id": "recent_done"},
+            },
+        )
+
+        with patch.object(
+            app_v2.benchmark_sessions,
+            "prune_terminal_sessions",
+            return_value=["old_done"],
+        ):
+            result = app_v2.cleanup_benchmark_reports()
+
+        self.assertEqual(result["pruned"], ["old_done"])
+        self.assertNotIn("old_done", json.loads(self.results_path.read_text()))
+        self.assertNotIn("old_done", json.loads(self.restore_path.read_text()))
+        self.assertIn("recent_done", json.loads(self.results_path.read_text()))
+        self.assertIn("recent_done", json.loads(self.restore_path.read_text()))
 
     def test_guarded_benchmark_setting_write_requires_active_session(self):
         self.interrupted_session("completed", device_profile="axeos_bitaxe")
@@ -742,6 +818,7 @@ class ThermalSettingsTests(unittest.TestCase):
             1,
         )
         self.assertEqual(row["status"], "applied")
+        self.assertIsNotNone(row["applied_at"])
 
     def test_sample_benchmark_candidate_updates_sampled_result(self):
         self.guarded_write_fixture()
@@ -772,6 +849,80 @@ class ThermalSettingsTests(unittest.TestCase):
         self.assertIsNone(row["safety_decision"])
         self.assertAlmostEqual(row["sample_summary"]["average_hashrate_th"], 1.2)
         self.assertEqual(row["sample_summary"]["average_temp"], 61.5)
+
+    def test_sample_benchmark_candidate_tolerates_transient_api_failures_and_resets_count(self):
+        self.guarded_write_fixture()
+        outcomes = iter([
+            {"temp": 60, "th": 1.0, "voltage": 5.0, "power": 20},
+            TimeoutError("first timeout"),
+            TimeoutError("second timeout"),
+            {"temp": 61, "th": 1.1, "voltage": 5.0, "power": 21},
+            TimeoutError("third timeout"),
+            TimeoutError("fourth timeout"),
+        ])
+
+        def sample_provider():
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch.object(app_v2, "apply_settings", return_value={"ok": True}):
+            result = app_v2.sample_benchmark_candidate(
+                "bench_001",
+                1,
+                sample_provider=sample_provider,
+                sleep_fn=lambda seconds: None,
+                max_samples=5,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["samples"], 1)
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertEqual(session["state"], "benchmarking")
+        row = app_v2.benchmark_results.candidate_result(
+            self.results_path,
+            "bench_001",
+            1,
+        )
+        self.assertEqual(row["status"], "sampled")
+        self.assertIsNone(row["safety_decision"])
+
+    def test_sample_benchmark_candidate_aborts_at_consecutive_api_failure_limit(self):
+        self.guarded_write_fixture()
+        outcomes = iter([
+            {"temp": 60, "th": 1.0, "voltage": 5.0, "power": 20},
+            TimeoutError("first timeout"),
+            TimeoutError("second timeout"),
+            TimeoutError("third timeout"),
+        ])
+
+        def sample_provider():
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch.object(app_v2, "apply_settings", return_value={"ok": True}):
+            with self.assertRaisesRegex(ValueError, "API_FAILURE_LIMIT"):
+                app_v2.sample_benchmark_candidate(
+                    "bench_001",
+                    1,
+                    sample_provider=sample_provider,
+                    sleep_fn=lambda seconds: None,
+                    max_samples=3,
+                )
+
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertEqual(session["state"], "failed")
+        self.assertIn("API_FAILURE_LIMIT", session["reason"])
+        row = app_v2.benchmark_results.candidate_result(
+            self.results_path,
+            "bench_001",
+            1,
+        )
+        self.assertEqual(row["status"], "aborted")
+        self.assertEqual(row["safety_decision"], "API_FAILURE_LIMIT")
 
     def test_sample_benchmark_candidate_restores_and_fails_session_on_abort(self):
         self.guarded_write_fixture()
@@ -804,6 +955,93 @@ class ThermalSettingsTests(unittest.TestCase):
             1,
         )
         self.assertEqual(row["status"], "aborted")
+        profile = json.loads(self.restore_path.read_text())["bench_001"]
+        self.assertEqual(profile["status"], "restored")
+        self.assertEqual(json.loads(self.locks_path.read_text()), {})
+
+    def test_sample_benchmark_candidate_restore_failure_requires_recovery_and_keeps_lock(self):
+        self.guarded_write_fixture()
+        samples = iter([
+            {"temp": 60, "th": 1.0, "voltage": 5.0, "power": 20},
+            {"temp": 69, "th": 1.1, "voltage": 5.0, "power": 21},
+        ])
+
+        with patch.object(
+            app_v2,
+            "apply_settings",
+            side_effect=[{"ok": True}, TimeoutError("restore timeout")],
+        ):
+            with self.assertRaisesRegex(ValueError, "CHIP_TEMP_EXCEEDED"):
+                app_v2.sample_benchmark_candidate(
+                    "bench_001",
+                    1,
+                    sample_provider=lambda: next(samples),
+                    sleep_fn=lambda seconds: None,
+                    max_samples=1,
+                )
+
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertTrue(session["recovery_required"])
+        profile = json.loads(self.restore_path.read_text())["bench_001"]
+        self.assertTrue(profile["recovery_required"])
+        self.assertIn("TestMiner", json.loads(self.locks_path.read_text()))
+
+    def test_retry_benchmark_restore_releases_lock_after_success(self):
+        self.guarded_write_fixture(settings_written=True)
+        app_v2.mark_benchmark_restore_recovery_required(
+            "bench_001", TimeoutError("offline"), "candidate_aborted"
+        )
+
+        with patch.object(app_v2, "apply_settings", return_value={"ok": True}) as apply:
+            result = app_v2.retry_benchmark_restore({"session_id": "bench_001"})
+
+        apply.assert_called_once()
+        self.assertTrue(result["lock_released"])
+        self.assertEqual(json.loads(self.locks_path.read_text()), {})
+        profile = json.loads(self.restore_path.read_text())["bench_001"]
+        self.assertFalse(profile["recovery_required"])
+        self.assertEqual(profile["status"], "restored")
+
+    def test_manual_restore_confirmation_releases_matching_lock(self):
+        self.guarded_write_fixture(settings_written=True)
+        app_v2.mark_benchmark_restore_recovery_required(
+            "bench_001", TimeoutError("offline"), "candidate_aborted"
+        )
+
+        result = app_v2.confirm_manual_benchmark_restore({"session_id": "bench_001"})
+
+        self.assertTrue(result["lock_released"])
+        self.assertEqual(json.loads(self.locks_path.read_text()), {})
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertFalse(session["recovery_required"])
+
+    def test_restore_resolution_keeps_recovery_pending_when_lock_release_fails(self):
+        self.guarded_write_fixture(settings_written=True)
+        app_v2.mark_benchmark_restore_recovery_required(
+            "bench_001", TimeoutError("offline"), "candidate_aborted"
+        )
+
+        with patch.object(app_v2.thermal_locks, "release_lock", return_value=False):
+            with self.assertRaisesRegex(ValueError, "could not be released"):
+                app_v2.confirm_manual_benchmark_restore({"session_id": "bench_001"})
+
+        profile = json.loads(self.restore_path.read_text())["bench_001"]
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertTrue(profile["recovery_required"])
+        self.assertEqual(profile["status"], "failed")
+        self.assertTrue(session["recovery_required"])
+
+    def test_prepare_benchmark_session_blocks_unresolved_restore_recovery(self):
+        self.restore_profile()
+        app_v2.benchmark_restore.mark_recovery_required(
+            self.restore_path, "bench_001", "restore timeout"
+        )
+
+        with patch.object(app_v2, "normalized_stats") as stats:
+            with self.assertRaisesRegex(ValueError, "restore recovery is required"):
+                app_v2.prepare_benchmark_session({"miner": "TestMiner"})
+
+        stats.assert_not_called()
 
     def test_sample_benchmark_candidate_prewrite_abort_releases_lock(self):
         self.guarded_write_fixture()
@@ -870,6 +1108,80 @@ class ThermalSettingsTests(unittest.TestCase):
                 })
 
         apply.assert_not_called()
+
+    def test_candidate_runner_failure_persists_for_terminal_status_payload(self):
+        self.guarded_write_fixture()
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        def fail_candidate(session_id, sequence):
+            app_v2.benchmark_restore.mark_restore_profile(
+                self.restore_path,
+                session_id,
+                "restored",
+                reason="candidate_failed_after_restore",
+            )
+            app_v2.thermal_locks.release_lock(
+                self.locks_path,
+                "TestMiner",
+                session_id=session_id,
+            )
+            app_v2.benchmark_sessions.transition_session(
+                self.benchmark_path,
+                session_id,
+                "failed",
+                reason="candidate_failed_after_restore",
+            )
+            raise RuntimeError("candidate exploded")
+
+        with patch.object(app_v2.threading, "Thread", ImmediateThread), patch.object(
+            app_v2,
+            "sample_benchmark_candidate",
+            side_effect=fail_candidate,
+        ):
+            app_v2.start_benchmark_candidate_runner("bench_001", 1)
+
+        runner = json.loads(self.benchmark_path.read_text())["bench_001"]["runner"]
+        self.assertEqual(runner["status"], "failed")
+        self.assertEqual(runner["sequence"], 1)
+        self.assertEqual(runner["error"], "candidate exploded")
+        self.assertEqual(runner["session_reason"], "candidate_failed_after_restore")
+        self.assertEqual(runner["restore_status"], "restored")
+        self.assertFalse(runner["recovery_required"])
+
+        app_v2.BENCHMARK_RUNNERS.clear()
+        with patch.object(app_v2, "cleanup_benchmark_reports", return_value={"pruned": []}):
+            payload = app_v2.benchmark_status_payload()
+        self.assertEqual(payload["runner"], runner)
+
+    def test_restart_marks_persisted_running_runner_failed_with_restore_outcome(self):
+        self.interrupted_session(
+            "benchmarking",
+            settings_written=True,
+            runner={
+                "session_id": "bench_001",
+                "sequence": 1,
+                "status": "running",
+                "started_at": "2026-06-24T01:05:00+00:00",
+            },
+        )
+        self.restore_profile()
+        self.thermal_lock()
+
+        with patch.object(app_v2, "apply_settings", return_value={"ok": True}):
+            recovery = app_v2.recover_benchmark_sessions()
+
+        self.assertTrue(recovery["restored_settings"])
+        runner = json.loads(self.benchmark_path.read_text())["bench_001"]["runner"]
+        self.assertEqual(runner["status"], "failed")
+        self.assertIn("dashboard restart", runner["error"])
+        self.assertEqual(runner["restore_status"], "restored")
+        self.assertFalse(runner["recovery_required"])
 
 
 if __name__ == "__main__":

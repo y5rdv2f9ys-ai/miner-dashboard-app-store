@@ -266,7 +266,7 @@ async function loadPerformance() {
         rows.appendChild(row);
     });
 
-    const counts = {STABLE: 0, HOLDING: 0, COOLING: 0, 'MAX COOLING': 0};
+    const counts = {STABLE: 0, HOLDING: 0, COOLING: 0, 'MAX COOLING': 0, BENCHMARK: 0};
     latestMiners.forEach(miner => {
         if (counts[miner.status] !== undefined) counts[miner.status]++;
     });
@@ -274,7 +274,8 @@ async function loadPerformance() {
         `<span class="stable">Stable ${counts.STABLE}</span>&nbsp;&nbsp;` +
         `<span class="holding">Holding ${counts.HOLDING}</span>&nbsp;&nbsp;` +
         `<span class="cooling">Cooling ${counts.COOLING}</span>&nbsp;&nbsp;` +
-        `<span class="maxcool">Max ${counts['MAX COOLING']}</span>`;
+        `<span class="maxcool">Max ${counts['MAX COOLING']}</span>&nbsp;&nbsp;` +
+        `<span class="benchmark">Benchmark ${counts.BENCHMARK}</span>`;
     setText('perfUpdated', `Updated: ${data.updated} · rolling averages`);
 }
 

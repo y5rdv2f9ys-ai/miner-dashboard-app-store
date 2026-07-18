@@ -43,6 +43,7 @@ class BenchmarkResultsTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["status"], "planned")
         self.assertIsNone(rows[0]["safety_decision"])
+        self.assertIsNone(rows[0]["applied_at"])
         self.assertEqual(rows[0]["sample_summary"]["average_hashrate_th"], None)
         self.assertTrue(rows[0]["is_below_base"])
         self.assertEqual(

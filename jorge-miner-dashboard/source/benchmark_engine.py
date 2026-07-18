@@ -91,8 +91,10 @@ def safety_failure(profile, sample, api_failures=0, zero_hashrate_seconds=0, ela
         return "WATCHDOG_TIMEOUT"
     if zero_hashrate_seconds >= safety["zero_hashrate_seconds"]:
         return "ZERO_HASHRATE_TIMEOUT"
+    # A missing sample is a transient API failure unless the caller's
+    # consecutive-failure count has reached the configured limit.
     if sample is None:
-        return "NO_SAMPLE"
+        return None
 
     temp = sample.get("temp")
     if temp is None:

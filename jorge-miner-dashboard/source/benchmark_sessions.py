@@ -1,7 +1,7 @@
 import json
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 ACTIVE_STATES = {"preparing", "benchmarking", "canceling", "restoring"}
@@ -10,6 +10,15 @@ TERMINAL_STATES = {"completed", "failed", "canceled"}
 
 def utc_now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def parse_timestamp(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def load_sessions(path):
@@ -141,3 +150,31 @@ def sessions_payload(path):
             reverse=True,
         ),
     }
+
+
+def prune_terminal_sessions(path, retention_days=7, now=None, preserve_session_ids=None):
+    sessions = load_sessions(path)
+    preserve_session_ids = set(preserve_session_ids or ())
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=retention_days)
+    pruned = []
+    kept = {}
+    for session_id, session in sessions.items():
+        if session_id in preserve_session_ids:
+            kept[session_id] = session
+            continue
+        if not isinstance(session, dict):
+            kept[session_id] = session
+            continue
+        completed_at = parse_timestamp(session.get("completed_at") or session.get("updated_at"))
+        if (
+            session.get("state") in TERMINAL_STATES
+            and completed_at is not None
+            and completed_at < cutoff
+        ):
+            pruned.append(session_id)
+            continue
+        kept[session_id] = session
+    if pruned:
+        write_sessions(path, kept)
+    return pruned

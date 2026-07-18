@@ -112,8 +112,11 @@ class BenchmarkEngineTests(unittest.TestCase):
     def test_safety_failure_detects_api_zero_hashrate_and_watchdog_limits(self):
         profile = benchmark_profiles.get_profile("axeos_bitaxe")
 
+        self.assertIsNone(
+            benchmark_engine.safety_failure(profile, None, api_failures=1)
+        )
         self.assertEqual(
-            benchmark_engine.safety_failure(profile, {"temp": 60}, api_failures=3),
+            benchmark_engine.safety_failure(profile, None, api_failures=3),
             "API_FAILURE_LIMIT",
         )
         self.assertEqual(

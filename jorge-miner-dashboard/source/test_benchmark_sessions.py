@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import benchmark_sessions
@@ -93,6 +94,37 @@ class BenchmarkSessionsTests(unittest.TestCase):
             [session["session_id"] for session in payload["sessions"]],
             ["bench_002", "bench_001"],
         )
+
+    def test_prune_terminal_sessions_keeps_recent_and_active_sessions(self):
+        sessions = {
+            "old_done": {
+                "session_id": "old_done",
+                "state": "completed",
+                "completed_at": "2026-06-01T00:00:00+00:00",
+            },
+            "recent_done": {
+                "session_id": "recent_done",
+                "state": "canceled",
+                "completed_at": "2026-06-25T00:00:00+00:00",
+            },
+            "active_old": {
+                "session_id": "active_old",
+                "state": "benchmarking",
+                "updated_at": "2026-06-01T00:00:00+00:00",
+            },
+        }
+        benchmark_sessions.write_sessions(self.path, sessions)
+
+        pruned = benchmark_sessions.prune_terminal_sessions(
+            self.path,
+            now=datetime(2026, 6, 26, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(pruned, ["old_done"])
+        remaining = benchmark_sessions.load_sessions(self.path)
+        self.assertNotIn("old_done", remaining)
+        self.assertIn("recent_done", remaining)
+        self.assertIn("active_old", remaining)
 
 
 if __name__ == "__main__":

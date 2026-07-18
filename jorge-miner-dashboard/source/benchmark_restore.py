@@ -57,6 +57,7 @@ def build_restore_profile(session_id, miner, stats, created_at=None):
     return {
         "session_id": session_id,
         "status": "active",
+        "recovery_required": False,
         "created_at": created_at or utc_now(),
         "completed_at": None,
         "miner": miner.get("name"),
@@ -91,7 +92,35 @@ def mark_restore_profile(path, session_id, status, completed_at=None, reason=Non
         raise LookupError("Restore profile was not found")
     profile["status"] = status
     profile["completed_at"] = completed_at or utc_now()
+    if status in ("restored", "canceled"):
+        profile["recovery_required"] = False
     if reason:
         profile["reason"] = reason
     write_restore_profiles(path, profiles)
     return profile
+
+
+def mark_recovery_required(path, session_id, reason):
+    profiles = load_restore_profiles(path)
+    profile = profiles.get(session_id)
+    if not isinstance(profile, dict):
+        raise LookupError("Restore profile was not found")
+    now = utc_now()
+    profile.update({
+        "status": "failed",
+        "recovery_required": True,
+        "completed_at": now,
+        "reason": reason,
+        "last_restore_error": reason,
+    })
+    profile["restore_attempts"] = int(profile.get("restore_attempts", 0) or 0) + 1
+    write_restore_profiles(path, profiles)
+    return profile
+
+
+def recovery_required_profiles(path):
+    return [
+        profile
+        for profile in load_restore_profiles(path).values()
+        if isinstance(profile, dict) and profile.get("recovery_required") is True
+    ]

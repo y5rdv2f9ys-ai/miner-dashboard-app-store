@@ -22,6 +22,11 @@ class BenchmarkUiTests(unittest.TestCase):
         self.assertIn("/api/benchmark/run-candidate", script)
         self.assertIn("/api/benchmark/cancel-active", script)
         self.assertIn("/api/benchmark/report", script)
+        self.assertIn("/api/benchmark/retry-restore", script)
+        self.assertIn("/api/benchmark/confirm-manual-restore", script)
+        self.assertIn('id="recoveryPanel"', html)
+        self.assertIn('id="retryRestoreButton"', html)
+        self.assertIn('id="confirmManualRestoreButton"', html)
 
     def test_existing_pages_link_to_benchmark_tuner(self):
         static = Path(app_v2.APP_DIR) / "static"

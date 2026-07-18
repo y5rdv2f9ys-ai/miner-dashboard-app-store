@@ -60,6 +60,7 @@ PAGE3_PUBLIC_PATHS = {"/public/page3", "/public/page3-data"}
 BENCHMARK_SESSIONS_PATH = DATA_DIR / "benchmark_sessions.json"
 BENCHMARK_RESTORE_PATH = DATA_DIR / "benchmark_restore_profiles.json"
 BENCHMARK_RESULTS_PATH = DATA_DIR / "benchmark_results.json"
+BENCHMARK_REPORT_RETENTION_DAYS = 7
 THERMAL_LOCKS_PATH = DATA_DIR / "thermal_locks.json"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
@@ -763,12 +764,33 @@ def find_configured_miner(name):
         raise LookupError("Miner was not found or its name is not unique")
     return matches[0]
 
+def benchmark_timing_payload(profile):
+    timing = profile.get("timing", {})
+    warmup_seconds = int(timing.get("warmup_seconds", 0) or 0)
+    test_seconds = int(timing.get("test_seconds", 0) or 0)
+    sample_interval_seconds = int(timing.get("sample_interval_seconds", 0) or 0)
+    return {
+        "warmup_seconds": warmup_seconds,
+        "test_seconds": test_seconds,
+        "sample_interval_seconds": sample_interval_seconds,
+        "candidate_seconds": warmup_seconds + test_seconds,
+    }
+
+def ensure_no_benchmark_recovery_required():
+    pending = benchmark_restore.recovery_required_profiles(BENCHMARK_RESTORE_PATH)
+    if pending:
+        session_id = pending[0].get("session_id", "unknown")
+        raise ValueError(
+            f"Benchmark restore recovery is required for session {session_id}"
+        )
+
 def start_benchmark_session(data):
     if not isinstance(data, dict):
         raise ValueError("Benchmark request must be a JSON object")
     name = data.get("miner")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("Miner name is required")
+    ensure_no_benchmark_recovery_required()
     miner = find_configured_miner(name.strip())
     session = benchmark_sessions.create_session(
         BENCHMARK_SESSIONS_PATH,
@@ -805,6 +827,7 @@ def start_benchmark_session(data):
                     "candidate_count": len(plan["candidates"]),
                     "first_candidate": plan["candidates"][0] if plan["candidates"] else None,
                     "baseline": baseline,
+                    "timing": benchmark_timing_payload(profile),
                 },
             },
         )
@@ -926,7 +949,15 @@ def cancel_active_benchmark_session(data):
     )
     restored = False
     if canceling.get("settings_written"):
-        restore_benchmark_miner(restore_profile)
+        try:
+            restore_benchmark_miner(restore_profile)
+        except Exception as error:
+            mark_benchmark_restore_recovery_required(
+                session_id,
+                error,
+                "cancel",
+            )
+            raise
         restored = True
 
     for row in benchmark_results.session_results(BENCHMARK_RESULTS_PATH, session_id):
@@ -941,11 +972,15 @@ def cancel_active_benchmark_session(data):
                 },
             )
 
-    thermal_locks.release_lock(
+    lock_released = thermal_locks.release_lock(
         THERMAL_LOCKS_PATH,
         canceling.get("miner", ""),
         session_id=session_id,
     )
+    if restored and not lock_released:
+        error = RuntimeError("matching benchmark thermal lock could not be released")
+        mark_benchmark_restore_recovery_required(session_id, error, "cancel")
+        raise error
     canceled = benchmark_sessions.transition_session(
         BENCHMARK_SESSIONS_PATH,
         session_id,
@@ -971,6 +1006,7 @@ def prepare_benchmark_session(data):
     name = data.get("miner")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("Miner name is required")
+    ensure_no_benchmark_recovery_required()
     miner = find_configured_miner(name.strip())
     session = benchmark_sessions.create_session(
         BENCHMARK_SESSIONS_PATH,
@@ -1008,6 +1044,7 @@ def prepare_benchmark_session(data):
                     "candidate_count": len(plan["candidates"]),
                     "first_candidate": plan["candidates"][0] if plan["candidates"] else None,
                     "baseline": baseline,
+                    "timing": benchmark_timing_payload(profile),
                 },
             },
         )
@@ -1086,6 +1123,25 @@ def benchmark_runner_payload(session_id=None):
             if isinstance(value, dict)
         }
 
+def persistent_benchmark_runner(session_id, runner):
+    return benchmark_sessions.update_session(
+        BENCHMARK_SESSIONS_PATH,
+        session_id,
+        {"runner": dict(runner)},
+    )
+
+def update_persistent_benchmark_runner(session_id, updates):
+    session = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH).get(
+        session_id, {}
+    )
+    runner = session.get("runner") if isinstance(session, dict) else None
+    if not isinstance(runner, dict):
+        return None
+    runner = dict(runner)
+    runner.update(updates)
+    persistent_benchmark_runner(session_id, runner)
+    return runner
+
 def start_benchmark_candidate_runner(session_id, sequence):
     sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
     session = sessions.get(session_id)
@@ -1109,6 +1165,7 @@ def start_benchmark_candidate_runner(session_id, sequence):
             "status": "running",
             "started_at": datetime.now(TZ).isoformat(),
         }
+        persistent_benchmark_runner(session_id, runner)
         BENCHMARK_RUNNERS[session_id] = runner
 
     def worker():
@@ -1120,11 +1177,26 @@ def start_benchmark_candidate_runner(session_id, sequence):
                 "result": result,
             }
         except Exception as error:
+            failed_session = benchmark_sessions.load_sessions(
+                BENCHMARK_SESSIONS_PATH
+            ).get(session_id, {})
+            restore_profile = benchmark_restore.get_restore_profile(
+                BENCHMARK_RESTORE_PATH,
+                session_id,
+            ) or {}
             update = {
                 "status": "failed",
                 "completed_at": datetime.now(TZ).isoformat(),
                 "error": str(error),
+                "session_reason": failed_session.get("reason"),
+                "restore_status": restore_profile.get("status"),
+                "recovery_required": bool(
+                    restore_profile.get("recovery_required")
+                ),
             }
+        persisted_runner = dict(runner)
+        persisted_runner.update(update)
+        persistent_benchmark_runner(session_id, persisted_runner)
         with BENCHMARK_RUNNER_LOCK:
             current = BENCHMARK_RUNNERS.get(session_id)
             if isinstance(current, dict):
@@ -1159,10 +1231,103 @@ def restore_benchmark_miner(profile):
         timeout=REQUEST_TIMEOUT,
     )
 
+def mark_benchmark_restore_recovery_required(session_id, error, context):
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        raise LookupError("Benchmark session was not found")
+    reason = f"{context}_restore_failed: {error}"
+    benchmark_restore.mark_recovery_required(
+        BENCHMARK_RESTORE_PATH,
+        session_id,
+        reason,
+    )
+    failed = benchmark_sessions.transition_session(
+        BENCHMARK_SESSIONS_PATH,
+        session_id,
+        "failed",
+        reason=reason,
+    )
+    return benchmark_sessions.update_session(
+        BENCHMARK_SESSIONS_PATH,
+        session_id,
+        {
+            "recovery_required": True,
+            "restore_error": str(error),
+            "restore_context": context,
+            "completed_at": failed.get("completed_at"),
+        },
+    )
+
+def resolve_benchmark_restore_recovery(session_id, reason):
+    profile = benchmark_restore.get_restore_profile(BENCHMARK_RESTORE_PATH, session_id)
+    if not isinstance(profile, dict) or not profile.get("recovery_required"):
+        raise ValueError("Benchmark restore recovery is not required")
+    lock = thermal_locks.active_lock_for(
+        profile.get("miner", ""),
+        thermal_locks.load_locks(THERMAL_LOCKS_PATH),
+    )
+    if not lock or str(lock.get("session_id", "")).strip() != session_id:
+        raise ValueError("Matching benchmark thermal lock was not found")
+    released = thermal_locks.release_lock(
+        THERMAL_LOCKS_PATH,
+        profile.get("miner", ""),
+        session_id=session_id,
+    )
+    if not released:
+        raise ValueError("Matching benchmark thermal lock could not be released")
+    restored = benchmark_restore.mark_restore_profile(
+        BENCHMARK_RESTORE_PATH,
+        session_id,
+        "restored",
+        reason=reason,
+    )
+    session = benchmark_sessions.update_session(
+        BENCHMARK_SESSIONS_PATH,
+        session_id,
+        {
+            "recovery_required": False,
+            "recovery_resolution": reason,
+            "recovery_resolved_at": datetime.now(TZ).replace(microsecond=0).isoformat(),
+        },
+    )
+    return {"session": session, "restore_profile": restored, "lock_released": True}
+
+def retry_benchmark_restore(data):
+    if not isinstance(data, dict):
+        raise ValueError("Benchmark request must be a JSON object")
+    session_id = str(data.get("session_id", "")).strip()
+    if not session_id:
+        raise ValueError("Session ID is required")
+    profile = benchmark_restore.get_restore_profile(BENCHMARK_RESTORE_PATH, session_id)
+    if not isinstance(profile, dict) or not profile.get("recovery_required"):
+        raise ValueError("Benchmark restore recovery is not required")
+    try:
+        restore_benchmark_miner(profile)
+    except Exception as error:
+        mark_benchmark_restore_recovery_required(session_id, error, "retry")
+        raise
+    return resolve_benchmark_restore_recovery(session_id, "automatic_restore_retry_succeeded")
+
+def confirm_manual_benchmark_restore(data):
+    if not isinstance(data, dict):
+        raise ValueError("Benchmark request must be a JSON object")
+    session_id = str(data.get("session_id", "")).strip()
+    if not session_id:
+        raise ValueError("Session ID is required")
+    return resolve_benchmark_restore_recovery(session_id, "manual_restore_confirmed")
+
 def recover_benchmark_sessions():
     sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
     session = benchmark_sessions.active_session(sessions)
     if not session:
+        pending = benchmark_restore.recovery_required_profiles(BENCHMARK_RESTORE_PATH)
+        if pending:
+            return {
+                "recovered": False,
+                "reason": "manual_cleanup_required",
+                "session_id": pending[0].get("session_id"),
+            }
         return {"recovered": False, "reason": "no_active_session"}
 
     session_id = session.get("session_id")
@@ -1170,6 +1335,17 @@ def recover_benchmark_sessions():
     state = session.get("state")
     reason = f"recovered_after_restart_from_{state}"
     restored_settings = False
+
+    stored_runner = session.get("runner")
+    if isinstance(stored_runner, dict) and stored_runner.get("status") == "running":
+        interrupted_runner = dict(stored_runner)
+        interrupted_runner.update({
+            "status": "failed",
+            "completed_at": datetime.now(TZ).isoformat(),
+            "error": "Benchmark runner interrupted by dashboard restart",
+            "session_reason": reason,
+        })
+        persistent_benchmark_runner(session_id, interrupted_runner)
 
     try:
         profile = benchmark_restore.get_restore_profile(BENCHMARK_RESTORE_PATH, session_id)
@@ -1207,10 +1383,20 @@ def recover_benchmark_sessions():
                 )
             except LookupError:
                 pass
-        thermal_locks.release_lock(
+        lock_released = thermal_locks.release_lock(
             THERMAL_LOCKS_PATH,
             miner_name,
             session_id=session_id,
+        )
+        if session.get("settings_written") and not lock_released:
+            raise RuntimeError("matching benchmark thermal lock could not be released")
+        update_persistent_benchmark_runner(
+            session_id,
+            {
+                "restore_status": restore_status,
+                "recovery_required": False,
+                "session_reason": reason,
+            },
         )
         return {
             "recovered": True,
@@ -1219,24 +1405,80 @@ def recover_benchmark_sessions():
             "restored_settings": restored_settings,
         }
     except Exception as error:
-        try:
-            benchmark_sessions.transition_session(
-                BENCHMARK_SESSIONS_PATH,
-                session_id,
-                "failed",
-                reason=f"recovery_failed: {error}",
-            )
-        except Exception:
-            pass
-        raise
+        mark_benchmark_restore_recovery_required(
+            session_id,
+            error,
+            "restart_recovery",
+        )
+        update_persistent_benchmark_runner(
+            session_id,
+            {
+                "restore_status": "failed",
+                "recovery_required": True,
+                "session_reason": f"restart_recovery_restore_failed: {error}",
+            },
+        )
+        return {
+            "recovered": False,
+            "reason": "manual_cleanup_required",
+            "session_id": session_id,
+            "restored_settings": False,
+            "error": str(error),
+        }
+
+def cleanup_benchmark_reports(retention_days=BENCHMARK_REPORT_RETENTION_DAYS):
+    recovery_profiles = benchmark_restore.recovery_required_profiles(
+        BENCHMARK_RESTORE_PATH
+    )
+    pruned = benchmark_sessions.prune_terminal_sessions(
+        BENCHMARK_SESSIONS_PATH,
+        retention_days=retention_days,
+        preserve_session_ids={
+            profile.get("session_id")
+            for profile in recovery_profiles
+            if profile.get("session_id")
+        },
+    )
+    if not pruned:
+        return {"pruned": []}
+
+    results = benchmark_results.load_results(BENCHMARK_RESULTS_PATH)
+    if isinstance(results, dict):
+        for session_id in pruned:
+            results.pop(session_id, None)
+        benchmark_results.write_results(BENCHMARK_RESULTS_PATH, results)
+
+    restore_profiles = benchmark_restore.load_restore_profiles(BENCHMARK_RESTORE_PATH)
+    if isinstance(restore_profiles, dict):
+        for session_id in pruned:
+            restore_profiles.pop(session_id, None)
+        benchmark_restore.write_restore_profiles(BENCHMARK_RESTORE_PATH, restore_profiles)
+
+    return {"pruned": pruned}
 
 def benchmark_status_payload():
+    cleanup_benchmark_reports()
     payload = benchmark_sessions.sessions_payload(BENCHMARK_SESSIONS_PATH)
     payload["profiles"] = benchmark_profiles.all_profiles()
+    payload["recovery_required"] = benchmark_restore.recovery_required_profiles(
+        BENCHMARK_RESTORE_PATH
+    )
     payload["runner"] = None
     active = payload.get("active")
     if active:
-        payload["runner"] = benchmark_runner_payload(active.get("session_id"))
+        payload["runner"] = (
+            benchmark_runner_payload(active.get("session_id"))
+            or active.get("runner")
+        )
+    else:
+        payload["runner"] = next(
+            (
+                session.get("runner")
+                for session in payload["sessions"]
+                if isinstance(session, dict) and isinstance(session.get("runner"), dict)
+            ),
+            None,
+        )
     payload["active_results"] = (
         benchmark_results.report_payload(
             BENCHMARK_RESULTS_PATH,
@@ -1255,6 +1497,7 @@ def benchmark_status_payload():
     return payload
 
 def benchmark_report_payload(session_id):
+    cleanup_benchmark_reports()
     if not isinstance(session_id, str) or not session_id.strip():
         raise ValueError("Session ID is required")
     session_id = session_id.strip()
@@ -1357,6 +1600,7 @@ def guarded_benchmark_setting_write(session_id, sequence, prewrite_sample):
         {
             "status": "applied",
             "safety_decision": None,
+            "applied_at": datetime.now(TZ).replace(microsecond=0).isoformat(),
         },
     )
     return {
@@ -1459,9 +1703,11 @@ def sample_benchmark_candidate(
             try:
                 sample = sample_provider()
             except Exception:
-                api_failures += 1
                 sample = None
-            if sample is not None:
+            if sample is None:
+                api_failures += 1
+            else:
+                api_failures = 0
                 samples.append(sample)
                 if sample.get("th") is not None and sample.get("th") <= 0:
                     zero_hashrate_seconds += interval
@@ -1490,17 +1736,33 @@ def sample_benchmark_candidate(
                 try:
                     restore_benchmark_miner(restore_profile)
                     reason = f"candidate_aborted: {safety_decision}"
-                except Exception as restore_error:
-                    reason = (
-                        f"candidate_aborted_restore_failed: "
-                        f"{safety_decision}: {restore_error}"
+                    benchmark_restore.mark_restore_profile(
+                        BENCHMARK_RESTORE_PATH,
+                        session_id,
+                        "restored",
+                        reason=reason,
                     )
-                benchmark_sessions.transition_session(
-                    BENCHMARK_SESSIONS_PATH,
-                    session_id,
-                    "failed",
-                    reason=reason,
-                )
+                    if not thermal_locks.release_lock(
+                        THERMAL_LOCKS_PATH,
+                        session.get("miner", ""),
+                        session_id=session_id,
+                    ):
+                        raise RuntimeError(
+                            "matching benchmark thermal lock could not be released"
+                        )
+                except Exception as restore_error:
+                    mark_benchmark_restore_recovery_required(
+                        session_id,
+                        restore_error,
+                        f"candidate_aborted_{safety_decision}",
+                    )
+                else:
+                    benchmark_sessions.transition_session(
+                        BENCHMARK_SESSIONS_PATH,
+                        session_id,
+                        "failed",
+                        reason=reason,
+                    )
                 raise ValueError(f"Benchmark candidate aborted: {safety_decision}")
 
             elapsed_seconds += interval
@@ -1666,6 +1928,10 @@ def get_thermal_limit(name):
         return 68
     return 70
 
+def benchmark_status_active(name):
+    lock = thermal_locks.active_lock_for(name, thermal_locks.load_locks(THERMAL_LOCKS_PATH))
+    return lock and str(lock.get("locked_by", "")).strip().lower() == "benchmark"
+
 def read_miner(miner):
     data = {}
     try:
@@ -1680,7 +1946,9 @@ def read_miner(miner):
         hot_freq = miner.get("hot_freq")
         critical_freq = miner.get("critical_freq")
 
-        if th <= 0:
+        if benchmark_status_active(miner["name"]):
+            status = "BENCHMARK"
+        elif th <= 0:
             status = "OFFLINE"
         elif critical_freq and freq <= critical_freq + FREQUENCY_TOLERANCE_MHZ:
             status = "MAX COOLING"
@@ -2234,6 +2502,8 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/benchmark/cancel",
                 "/api/benchmark/cancel-active",
                 "/api/benchmark/run-candidate",
+                "/api/benchmark/retry-restore",
+                "/api/benchmark/confirm-manual-restore",
             )
             if self.path in protected_paths and not self.is_same_origin():
                 self.send_response(403)
@@ -2279,6 +2549,8 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/benchmark/cancel",
                 "/api/benchmark/cancel-active",
                 "/api/benchmark/run-candidate",
+                "/api/benchmark/retry-restore",
+                "/api/benchmark/confirm-manual-restore",
             ):
                 length = int(self.headers.get("Content-Length", 0))
                 if length <= 0 or length > 4096:
@@ -2300,6 +2572,10 @@ class Handler(BaseHTTPRequestHandler):
                         session = cancel_benchmark_session(data)
                     elif self.path == "/api/benchmark/cancel-active":
                         session = cancel_active_benchmark_session(data)
+                    elif self.path == "/api/benchmark/retry-restore":
+                        session = retry_benchmark_restore(data)
+                    elif self.path == "/api/benchmark/confirm-manual-restore":
+                        session = confirm_manual_benchmark_restore(data)
                     else:
                         session = run_benchmark_candidate(data)
                 except ValueError as error:
@@ -2651,6 +2927,12 @@ if __name__ == "__main__":
             print(f"Benchmark recovery: {recovery}", flush=True)
     except Exception as error:
         print(f"Benchmark recovery error: {error}", flush=True)
+    try:
+        cleanup = cleanup_benchmark_reports()
+        if cleanup.get("pruned"):
+            print(f"Benchmark report cleanup: {cleanup}", flush=True)
+    except Exception as error:
+        print(f"Benchmark report cleanup error: {error}", flush=True)
     threading.Thread(target=collector_loop, name="miner-collector", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.serve_forever()
