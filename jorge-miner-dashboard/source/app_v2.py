@@ -51,6 +51,7 @@ COLLECTOR_WAKE = threading.Event()
 DASHBOARD_SNAPSHOT = None
 BENCHMARK_RUNNER_LOCK = threading.Lock()
 BENCHMARK_RUNNERS = {}
+BENCHMARK_CANCEL_EVENTS = {}
 
 RUNS_PATH = DATA_DIR / "active_mining_runs.json"
 MINERS_PATH = DATA_DIR / "miners_v2.json"
@@ -807,6 +808,7 @@ def start_benchmark_session(data):
             "voltage": stats.get("volt"),
             "base_frequency": miner.get("base_freq"),
             "base_voltage": miner.get("base_volt"),
+            "telemetry": benchmark_engine.sample_summary([stats]),
         }
         plan = benchmark_engine.dry_run_plan(profile, baseline=baseline)
         benchmark_results.save_planned_results(
@@ -927,6 +929,11 @@ def cancel_active_benchmark_session(data):
         raise ValueError("Session ID is required")
     session_id = session_id.strip()
 
+    with BENCHMARK_RUNNER_LOCK:
+        cancel_event = BENCHMARK_CANCEL_EVENTS.get(session_id)
+        if cancel_event:
+            cancel_event.set()
+
     sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
     session = sessions.get(session_id)
     if not isinstance(session, dict):
@@ -1023,6 +1030,7 @@ def prepare_benchmark_session(data):
             "voltage": stats.get("volt"),
             "base_frequency": miner.get("base_freq"),
             "base_voltage": miner.get("base_volt"),
+            "telemetry": benchmark_engine.sample_summary([stats]),
         }
         plan = benchmark_engine.dry_run_plan(profile, baseline=baseline)
         benchmark_results.save_planned_results(
@@ -1109,8 +1117,30 @@ def run_benchmark_candidate(data):
         raise ValueError("Candidate sequence must be a positive integer")
     session_id = session_id.strip()
     if data.get("blocking") is True:
-        return sample_benchmark_candidate(session_id, sequence)
+        with BENCHMARK_RUNNER_LOCK:
+            existing = BENCHMARK_RUNNERS.get(session_id)
+            if isinstance(existing, dict) and existing.get("status") == "running":
+                raise ValueError("Benchmark runner is already running")
+            BENCHMARK_RUNNERS[session_id] = {
+                "session_id": session_id, "sequence": sequence,
+                "status": "running", "mode": "manual",
+            }
+        try:
+            return sample_benchmark_candidate(session_id, sequence)
+        finally:
+            with BENCHMARK_RUNNER_LOCK:
+                runner = BENCHMARK_RUNNERS.get(session_id)
+                if isinstance(runner, dict):
+                    runner["status"] = "completed"
     return start_benchmark_candidate_runner(session_id, sequence)
+
+def run_full_benchmark(data):
+    if not isinstance(data, dict):
+        raise ValueError("Benchmark request must be a JSON object")
+    session_id = str(data.get("session_id", "")).strip()
+    if not session_id:
+        raise ValueError("Session ID is required")
+    return start_full_benchmark_runner(session_id)
 
 def benchmark_runner_payload(session_id=None):
     with BENCHMARK_RUNNER_LOCK:
@@ -1208,6 +1238,160 @@ def start_benchmark_candidate_runner(session_id, sequence):
         "ok": True,
         "runner": benchmark_runner_payload(session_id),
     }
+
+def verify_benchmark_restore(profile, sample_provider=None, sleep_fn=time.sleep, attempts=6):
+    restore = profile.get("restore", {})
+    miner = {
+        "name": profile.get("miner"),
+        "ip": profile.get("ip"),
+        "type": profile.get("device_type"),
+    }
+    provider = sample_provider or (lambda: normalized_stats(miner, timeout=REQUEST_TIMEOUT))
+    last_error = "restore verification telemetry unavailable"
+    for attempt in range(max(1, attempts)):
+        try:
+            sample = provider()
+            frequency = sample.get("freq") if isinstance(sample, dict) else None
+            voltage = sample.get("volt") if isinstance(sample, dict) else None
+            if frequency is None or abs(float(frequency) - float(restore.get("frequency"))) > FREQUENCY_TOLERANCE_MHZ:
+                last_error = "restored frequency could not be verified"
+            elif voltage is None or abs(float(voltage) - float(restore.get("voltage"))) > 10:
+                last_error = "restored voltage could not be verified"
+            else:
+                return sample
+        except Exception as error:
+            last_error = str(error)
+        if attempt + 1 < attempts:
+            sleep_fn(5)
+    raise RuntimeError(last_error)
+
+def restore_and_verify_benchmark_miner(profile, sample_provider=None):
+    response = restore_benchmark_miner(profile)
+    verification = verify_benchmark_restore(profile, sample_provider=sample_provider)
+    return {"response": response, "verification": verification}
+
+def restore_candidate_for_continuation(session_id, profile, benchmark_profile):
+    try:
+        restored = restore_and_verify_benchmark_miner(profile)
+        decision = benchmark_engine.safety_failure(
+            benchmark_profile, restored.get("verification")
+        )
+        if decision:
+            raise RuntimeError(f"restored baseline is unsafe: {decision}")
+        benchmark_sessions.update_session(
+            BENCHMARK_SESSIONS_PATH, session_id, {"settings_written": False}
+        )
+        return restored
+    except Exception as error:
+        mark_benchmark_restore_recovery_required(
+            session_id, error, "candidate_abort_continuation"
+        )
+        raise
+
+def complete_full_benchmark(session_id, restore_profile):
+    benchmark_sessions.transition_session(BENCHMARK_SESSIONS_PATH, session_id, "restoring")
+    try:
+        restore_and_verify_benchmark_miner(restore_profile)
+        if not thermal_locks.release_lock(
+            THERMAL_LOCKS_PATH, restore_profile.get("miner", ""), session_id=session_id
+        ):
+            raise RuntimeError("matching benchmark thermal lock could not be released")
+    except Exception as error:
+        mark_benchmark_restore_recovery_required(session_id, error, "full_run_completion")
+        raise
+    benchmark_restore.mark_restore_profile(
+        BENCHMARK_RESTORE_PATH, session_id, "restored", reason="full_run_completed"
+    )
+    completed = benchmark_sessions.transition_session(
+        BENCHMARK_SESSIONS_PATH, session_id, "completed", reason="full_run_completed"
+    )
+    recommendations = benchmark_engine.recommendation_summary(
+        benchmark_results.session_results(BENCHMARK_RESULTS_PATH, session_id),
+        benchmark_profiles.get_profile(completed.get("device_profile")),
+        baseline=completed.get("benchmark_plan", {}).get("baseline"),
+    )
+    return benchmark_sessions.update_session(
+        BENCHMARK_SESSIONS_PATH, session_id, {"recommendations": recommendations}
+    )
+
+def start_full_benchmark_runner(session_id):
+    sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        raise LookupError("Benchmark session was not found")
+    if session.get("state") != "benchmarking":
+        raise ValueError("Benchmark session is not ready for a full run")
+    all_rows = benchmark_results.session_results(BENCHMARK_RESULTS_PATH, session_id)
+    planned = [
+        row for row in all_rows
+        if row.get("status") == "planned"
+    ]
+    if not planned:
+        raise ValueError("No planned benchmark candidates remain")
+    with BENCHMARK_RUNNER_LOCK:
+        existing = BENCHMARK_RUNNERS.get(session_id)
+        if isinstance(existing, dict) and existing.get("status") == "running":
+            raise ValueError("Benchmark runner is already running")
+        cancel_event = threading.Event()
+        BENCHMARK_CANCEL_EVENTS[session_id] = cancel_event
+        runner = {
+            "session_id": session_id,
+            "sequence": planned[0]["sequence"],
+            "status": "running",
+            "mode": "full",
+            "completed_candidates": len(all_rows) - len(planned),
+            "total_candidates": len(all_rows),
+            "started_at": datetime.now(TZ).isoformat(),
+        }
+        persistent_benchmark_runner(session_id, runner)
+        BENCHMARK_RUNNERS[session_id] = runner
+
+    def worker():
+        update = {}
+        try:
+            initially_finished = len(all_rows) - len(planned)
+            for index, row in enumerate(planned, 1):
+                if cancel_event.is_set():
+                    raise ValueError("Benchmark canceled by user")
+                progress = {
+                    "sequence": row["sequence"],
+                    "completed_candidates": initially_finished + index - 1,
+                }
+                update_persistent_benchmark_runner(session_id, progress)
+                with BENCHMARK_RUNNER_LOCK:
+                    BENCHMARK_RUNNERS[session_id].update(progress)
+                sample_benchmark_candidate(
+                    session_id, row["sequence"], full_run=True, cancel_event=cancel_event
+                )
+            restore_profile = benchmark_restore.get_restore_profile(
+                BENCHMARK_RESTORE_PATH, session_id
+            )
+            completed = complete_full_benchmark(session_id, restore_profile)
+            update = {
+                "status": "completed", "completed_candidates": len(all_rows),
+                "completed_at": datetime.now(TZ).isoformat(),
+                "recommendations": completed.get("recommendations"),
+            }
+        except Exception as error:
+            current = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH).get(session_id, {})
+            update = {
+                "status": "canceled" if current.get("state") == "canceled" else "failed",
+                "completed_at": datetime.now(TZ).isoformat(), "error": str(error),
+                "recovery_required": bool(current.get("recovery_required")),
+            }
+        finally:
+            latest_session = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH).get(session_id, {})
+            persisted = dict(latest_session.get("runner") or runner)
+            persisted.update(update)
+            persistent_benchmark_runner(session_id, persisted)
+            with BENCHMARK_RUNNER_LOCK:
+                current_runner = BENCHMARK_RUNNERS.get(session_id)
+                if isinstance(current_runner, dict):
+                    current_runner.update(update)
+                BENCHMARK_CANCEL_EVENTS.pop(session_id, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True, "runner": benchmark_runner_payload(session_id)}
 
 def restore_benchmark_miner(profile):
     restore = profile.get("restore") if isinstance(profile, dict) else None
@@ -1494,6 +1678,10 @@ def benchmark_status_payload():
         for session in payload["sessions"]
         if isinstance(session, dict) and session.get("session_id")
     }
+    latest = payload["sessions"][0] if payload["sessions"] else None
+    payload["latest_report"] = (
+        benchmark_report_payload(latest.get("session_id")) if latest else None
+    )
     return payload
 
 def benchmark_report_payload(session_id):
@@ -1517,6 +1705,7 @@ def benchmark_report_payload(session_id):
         session,
         restore_profile=restore_profile,
         profile=profile,
+        recommendations=session.get("recommendations"),
     )
 
 def guarded_benchmark_setting_write(session_id, sequence, prewrite_sample):
@@ -1618,6 +1807,8 @@ def sample_benchmark_candidate(
     sample_provider=None,
     sleep_fn=time.sleep,
     max_samples=None,
+    full_run=False,
+    cancel_event=None,
 ):
     sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
     session = sessions.get(session_id)
@@ -1648,6 +1839,15 @@ def sample_benchmark_candidate(
     try:
         guarded_benchmark_setting_write(session_id, sequence, prewrite_sample)
     except Exception as error:
+        if full_run:
+            restore_candidate_for_continuation(session_id, restore_profile, profile)
+            return {
+                "ok": False,
+                "aborted": True,
+                "session_id": session_id,
+                "sequence": int(sequence),
+                "reason": str(error),
+            }
         now = datetime.now(TZ).isoformat()
         reason = f"candidate_prewrite_aborted: {error}"
         try:
@@ -1691,8 +1891,16 @@ def sample_benchmark_candidate(
     elapsed_seconds = 0
     try:
         if timing.get("warmup_seconds"):
-            sleep_fn(timing["warmup_seconds"])
+            remaining = int(timing["warmup_seconds"])
+            while remaining > 0:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ValueError("Benchmark canceled by user")
+                duration = min(interval, remaining) if sleep_fn is time.sleep else remaining
+                sleep_fn(duration)
+                remaining -= duration
         for _ in range(total_samples):
+            if cancel_event is not None and cancel_event.is_set():
+                raise ValueError("Benchmark canceled by user")
             sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
             active_session = sessions.get(session_id)
             if (
@@ -1734,6 +1942,20 @@ def sample_benchmark_candidate(
                     },
                 )
                 try:
+                    if full_run:
+                        restore_candidate_for_continuation(
+                            session_id, restore_profile, profile
+                        )
+                        return {
+                            "ok": False,
+                            "aborted": True,
+                            "session_id": session_id,
+                            "sequence": int(sequence),
+                            "reason": safety_decision,
+                            "result": benchmark_results.candidate_result(
+                                BENCHMARK_RESULTS_PATH, session_id, int(sequence)
+                            ),
+                        }
                     restore_benchmark_miner(restore_profile)
                     reason = f"candidate_aborted: {safety_decision}"
                     benchmark_restore.mark_restore_profile(
@@ -1756,6 +1978,7 @@ def sample_benchmark_candidate(
                         restore_error,
                         f"candidate_aborted_{safety_decision}",
                     )
+                    raise ValueError(f"Benchmark candidate aborted: {safety_decision}")
                 else:
                     benchmark_sessions.transition_session(
                         BENCHMARK_SESSIONS_PATH,
@@ -2502,6 +2725,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/benchmark/cancel",
                 "/api/benchmark/cancel-active",
                 "/api/benchmark/run-candidate",
+                "/api/benchmark/run-full",
                 "/api/benchmark/retry-restore",
                 "/api/benchmark/confirm-manual-restore",
             )
@@ -2549,6 +2773,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/benchmark/cancel",
                 "/api/benchmark/cancel-active",
                 "/api/benchmark/run-candidate",
+                "/api/benchmark/run-full",
                 "/api/benchmark/retry-restore",
                 "/api/benchmark/confirm-manual-restore",
             ):
@@ -2576,6 +2801,8 @@ class Handler(BaseHTTPRequestHandler):
                         session = retry_benchmark_restore(data)
                     elif self.path == "/api/benchmark/confirm-manual-restore":
                         session = confirm_manual_benchmark_restore(data)
+                    elif self.path == "/api/benchmark/run-full":
+                        session = run_full_benchmark(data)
                     else:
                         session = run_benchmark_candidate(data)
                 except ValueError as error:

@@ -5,6 +5,7 @@ const sessionIdInput = document.getElementById('sessionId');
 const statusLine = document.getElementById('statusLine');
 const prepareButton = document.getElementById('prepareButton');
 const runButton = document.getElementById('runButton');
+const runFullButton = document.getElementById('runFullButton');
 const cancelButton = document.getElementById('cancelButton');
 const exportButton = document.getElementById('exportButton');
 const refreshButton = document.getElementById('refreshButton');
@@ -18,6 +19,7 @@ const profileBox = document.getElementById('profileBox');
 const resultBox = document.getElementById('resultBox');
 const timerBox = document.getElementById('timerBox');
 const candidateRows = document.getElementById('candidateRows');
+const recommendationBox = document.getElementById('recommendationBox');
 
 let state = {
     miners: [],
@@ -117,7 +119,7 @@ function activeSession() {
 
 function activeReport() {
     const active = activeSession();
-    if (!active) return null;
+    if (!active) return state.benchmark?.latest_report || state.report || null;
     return state.benchmark?.results?.[active.session_id] || state.benchmark?.active_results || null;
 }
 
@@ -175,7 +177,7 @@ function renderSummary() {
     sessionIdInput.value = session?.session_id || '';
     const runner = activeRunner();
     const runnerText = runner
-        ? ` · candidate #${runner.sequence} ${runner.status}`
+        ? ` · ${runner.mode === 'full' ? 'full benchmark' : 'candidate'} #${runner.sequence} ${runner.status}${runner.mode === 'full' ? ` · ${runner.completed_candidates || 0}/${runner.total_candidates || 0}` : ''}`
         : '';
     statusLine.textContent = session
         ? `${session.miner} · ${session.state} · ${session.device_profile_label || 'profile pending'}${runnerText}`
@@ -200,6 +202,41 @@ function renderSummary() {
         metric('Aborted', counts.aborted || 0),
     ].join('');
     renderTimers();
+    renderRecommendations();
+}
+
+function formatNumber(value, digits = 2) {
+    return value == null ? 'NA' : Number(value).toFixed(digits);
+}
+
+function renderRecommendations() {
+    const recommendations = activeReport()?.recommendations || state.report?.recommendations;
+    if (!recommendations) {
+        recommendationBox.textContent = 'Complete a full benchmark to generate recommendations.';
+        return;
+    }
+    const entries = [
+        recommendations.best_hashrate,
+        recommendations.best_stability,
+        recommendations.lowest_power,
+        recommendations.best_efficiency,
+        recommendations.best_overall,
+    ];
+    recommendationBox.innerHTML = entries.map(item => {
+        if (!item) return '<article class="summary-card"><h3>Best Stability</h3><p>Insufficient samples.</p></article>';
+        const s = item.sample_summary || {};
+        const d = item.baseline_delta || {};
+        const delta = (key, unit) => d[key] == null ? '' : ` (${d[key] >= 0 ? '+' : ''}${formatNumber(d[key])}${unit} vs baseline)`;
+        return `<article class="summary-card"><h3>${escapeHtml(item.category)}</h3><div class="metric-list">
+            ${metric('Setting', `${item.frequency} MHz / ${item.voltage} mV`)}
+            ${metric('Hashrate', `${formatNumber(s.average_hashrate_th)} TH/s${delta('average_hashrate_th', ' TH/s')}`)}
+            ${metric('Power', `${formatNumber(s.average_power_watts)} W${delta('average_power_watts', ' W')}`)}
+            ${metric('Efficiency', `${formatNumber(s.efficiency_jth)} J/TH${delta('efficiency_jth', ' J/TH')}`)}
+            ${metric('Chip temp', `${formatNumber(s.average_temp, 1)} avg / ${formatNumber(s.max_temp, 1)} max${delta('average_temp', '°C')}`)}
+            ${metric('VR temp', `${formatNumber(s.average_vr_temp, 1)} avg / ${formatNumber(s.max_vr_temp, 1)} max${delta('average_vr_temp', '°C')}`)}
+            ${metric('Stability', `${formatNumber(s.hashrate_variability_pct)}% variability (${s.sample_count || 0} samples)`)}
+        </div></article>`;
+    }).join('');
 }
 
 function renderTimers() {
@@ -269,8 +306,25 @@ function renderControls() {
     const running = runnerIsActive();
     prepareButton.disabled = Boolean(session) || pendingRecoveries().length > 0;
     runButton.disabled = !session || !candidateSelect.value || running;
+    runFullButton.disabled = !session || running || !(activeReport()?.results || []).some(row => row.status === 'planned');
     cancelButton.disabled = !session;
     exportButton.disabled = !activeReport();
+}
+
+async function runFullBenchmark() {
+    const session = activeSession();
+    if (!session) return;
+    const remaining = (activeReport()?.results || []).filter(row => row.status === 'planned').length;
+    if (!confirm(`Run all ${remaining} remaining candidates unattended?`)) return;
+    runFullButton.disabled = true;
+    try {
+        await postJson('/api/benchmark/run-full', {session_id: session.session_id});
+        showMessage(`Full benchmark started for ${remaining} candidates.`, 'success');
+        await loadState();
+    } catch (error) {
+        showMessage(error.message, 'error');
+        await loadState();
+    }
 }
 
 function render() {
@@ -325,6 +379,7 @@ async function loadState() {
     ]);
     state.miners = miners.miners || [];
     state.benchmark = benchmark;
+    state.report = benchmark.latest_report || state.report;
     const active = activeSession();
     if (active) {
         state.report = await fetchJson(`/api/benchmark/report?session_id=${encodeURIComponent(active.session_id)}`);
@@ -408,6 +463,7 @@ function exportReport() {
 
 prepareButton.addEventListener('click', prepareBenchmark);
 runButton.addEventListener('click', runCandidate);
+runFullButton.addEventListener('click', runFullBenchmark);
 cancelButton.addEventListener('click', cancelActive);
 exportButton.addEventListener('click', exportReport);
 refreshButton.addEventListener('click', loadState);

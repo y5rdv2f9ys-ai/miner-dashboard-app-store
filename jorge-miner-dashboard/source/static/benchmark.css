@@ -164,3 +164,8 @@ input:focus, select:focus { outline: 2px solid #2563eb; border-color: transparen
     .form-actions, .recovery-panel, .recovery-actions { align-items: stretch; flex-direction: column; }
     .save-note { margin-right: 0; }
 }
+.recommendation-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1rem;
+}

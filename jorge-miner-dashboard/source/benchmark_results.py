@@ -4,9 +4,15 @@ from datetime import datetime, timezone
 
 
 SAMPLE_SUMMARY_FIELDS = (
+    "sample_count",
     "average_hashrate_th",
+    "min_hashrate_th",
+    "max_hashrate_th",
+    "hashrate_variability_pct",
     "average_temp",
+    "max_temp",
     "average_vr_temp",
+    "max_vr_temp",
     "average_power_watts",
     "efficiency_jth",
 )
@@ -127,7 +133,7 @@ def report_payload(path, session_id):
     }
 
 
-def export_report(results_path, session, restore_profile=None, profile=None):
+def export_report(results_path, session, restore_profile=None, profile=None, recommendations=None):
     if not isinstance(session, dict):
         raise ValueError("Benchmark session is required")
     session_id = session.get("session_id")
@@ -167,6 +173,7 @@ def export_report(results_path, session, restore_profile=None, profile=None):
         "results": rows,
         "top_hashrate": payload["top_hashrate"],
         "top_efficiency": payload["top_efficiency"],
+        "recommendations": recommendations,
         "aborted": aborted,
         "canceled": canceled,
         "safety_decisions": safety_decisions,

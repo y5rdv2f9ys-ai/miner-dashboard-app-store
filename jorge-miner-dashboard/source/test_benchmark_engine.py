@@ -163,6 +163,54 @@ class BenchmarkEngineTests(unittest.TestCase):
         self.assertEqual(summary["average_vr_temp"], 71.0)
         self.assertEqual(summary["average_power_watts"], 22.0)
         self.assertAlmostEqual(summary["efficiency_jth"], 14.6666666667)
+        self.assertEqual(summary["sample_count"], 2)
+        self.assertEqual(summary["min_hashrate_th"], 1.0)
+        self.assertEqual(summary["max_hashrate_th"], 2.0)
+        self.assertAlmostEqual(summary["hashrate_variability_pct"], 33.3333333333)
+        self.assertEqual(summary["max_temp"], 62.0)
+        self.assertEqual(summary["max_vr_temp"], 72.0)
+
+    def test_recommendations_select_categories_and_balance_overall_score(self):
+        def row(sequence, hashrate, power, efficiency, temp, variability):
+            return {
+                "sequence": sequence, "frequency": 400 + sequence * 25,
+                "voltage": 1100, "status": "sampled", "safety_decision": None,
+                "sample_summary": {
+                    "sample_count": 60, "average_hashrate_th": hashrate,
+                    "average_power_watts": power, "efficiency_jth": efficiency,
+                    "average_temp": temp - 2, "max_temp": temp,
+                    "average_vr_temp": 65, "max_vr_temp": 68,
+                    "hashrate_variability_pct": variability,
+                },
+            }
+        rows = [
+            row(1, 1.0, 12, 12, 55, 1.0),
+            row(2, 1.5, 20, 13.33, 62, 2.0),
+            row(3, 1.7, 25, 14.7, 68, 5.0),
+        ]
+        result = benchmark_engine.recommendation_summary(
+            rows, benchmark_profiles.get_profile("axeos_bitaxe")
+        )
+        self.assertEqual(result["best_hashrate"]["sequence"], 3)
+        self.assertEqual(result["best_stability"]["sequence"], 1)
+        self.assertEqual(result["lowest_power"]["sequence"], 1)
+        self.assertEqual(result["best_efficiency"]["sequence"], 1)
+        self.assertNotEqual(result["best_overall"]["sequence"], 3)
+        self.assertEqual(sum(result["scoring_weights"].values()), 1.0)
+
+    def test_best_stability_requires_meaningful_sample_count(self):
+        rows = [{
+            "sequence": 1, "frequency": 400, "voltage": 1050,
+            "status": "sampled", "safety_decision": None,
+            "sample_summary": {"sample_count": 2, "average_hashrate_th": 1,
+                "average_power_watts": 10, "efficiency_jth": 10,
+                "max_temp": 50, "max_vr_temp": 60,
+                "hashrate_variability_pct": 0.1},
+        }]
+        result = benchmark_engine.recommendation_summary(
+            rows, benchmark_profiles.get_profile("axeos_bitaxe")
+        )
+        self.assertIsNone(result["best_stability"])
 
 
 if __name__ == "__main__":

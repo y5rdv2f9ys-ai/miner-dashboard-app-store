@@ -1183,6 +1183,130 @@ class ThermalSettingsTests(unittest.TestCase):
         self.assertEqual(runner["restore_status"], "restored")
         self.assertFalse(runner["recovery_required"])
 
+    def full_run_fixture(self):
+        self.interrupted_session(
+            "benchmarking", device_profile="axeos_bitaxe",
+            benchmark_plan={
+                "baseline": {"frequency": 600, "voltage": 1150},
+                "candidate_count": 2,
+            },
+        )
+        self.restore_profile()
+        self.thermal_lock()
+        candidates = [
+            {"sequence": 1, "frequency": 400, "voltage": 1050,
+             "frequency_relation": "below_base", "voltage_relation": "below_base",
+             "is_below_base": True},
+            {"sequence": 2, "frequency": 425, "voltage": 1050,
+             "frequency_relation": "below_base", "voltage_relation": "below_base",
+             "is_below_base": True},
+        ]
+        app_v2.benchmark_results.save_planned_results(
+            self.results_path, "bench_001", candidates
+        )
+
+    def test_full_run_sequences_all_candidates_and_completes(self):
+        self.full_run_fixture()
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=None): self.target = target
+            def start(self): self.target()
+
+        seen = []
+        def sample(session_id, sequence, **kwargs):
+            seen.append(sequence)
+            app_v2.benchmark_results.update_candidate_result(
+                self.results_path, session_id, sequence,
+                {"status": "sampled", "sample_summary": {
+                    "sample_count": 60, "average_hashrate_th": 1 + sequence / 10,
+                    "min_hashrate_th": 1, "max_hashrate_th": 1.3,
+                    "hashrate_variability_pct": sequence,
+                    "average_power_watts": 20 + sequence, "efficiency_jth": 18,
+                    "average_temp": 60, "max_temp": 62,
+                    "average_vr_temp": 65, "max_vr_temp": 67,
+                }},
+            )
+            return {"ok": True}
+
+        baseline = {"freq": 600, "volt": 1150, "temp": 60, "th": 1.0}
+        with patch.object(app_v2.threading, "Thread", ImmediateThread), \
+             patch.object(app_v2, "sample_benchmark_candidate", side_effect=sample), \
+             patch.object(app_v2, "apply_settings", return_value={"ok": True}) as apply, \
+             patch.object(app_v2, "normalized_stats", return_value=baseline):
+            app_v2.start_full_benchmark_runner("bench_001")
+
+        self.assertEqual(seen, [1, 2])
+        self.assertEqual(apply.call_args.kwargs["frequency"], 600)
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertEqual(session["state"], "completed")
+        self.assertIsNotNone(session["recommendations"])
+        self.assertEqual(json.loads(self.locks_path.read_text()), {})
+
+    def test_full_run_continues_after_safely_aborted_candidate(self):
+        self.full_run_fixture()
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=None): self.target = target
+            def start(self): self.target()
+
+        seen = []
+        def sample(session_id, sequence, **kwargs):
+            seen.append(sequence)
+            status = "aborted" if sequence == 1 else "sampled"
+            app_v2.benchmark_results.update_candidate_result(
+                self.results_path, session_id, sequence,
+                {"status": status, "safety_decision": "POWER_EXCEEDED" if sequence == 1 else None},
+            )
+            return {"ok": sequence != 1, "aborted": sequence == 1}
+
+        with patch.object(app_v2.threading, "Thread", ImmediateThread), \
+             patch.object(app_v2, "sample_benchmark_candidate", side_effect=sample), \
+             patch.object(app_v2, "complete_full_benchmark", return_value={"recommendations": None}):
+            app_v2.start_full_benchmark_runner("bench_001")
+        self.assertEqual(seen, [1, 2])
+
+    def test_cancel_during_full_run_stops_transition_and_restores(self):
+        self.full_run_fixture()
+        self.interrupted_session(
+            "benchmarking", device_profile="axeos_bitaxe", settings_written=True,
+            benchmark_plan={"baseline": {"frequency": 600, "voltage": 1150}},
+        )
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=None): self.target = target
+            def start(self): self.target()
+
+        seen = []
+        def sample(session_id, sequence, **kwargs):
+            seen.append(sequence)
+            app_v2.cancel_active_benchmark_session({"session_id": session_id})
+            return {"ok": False}
+
+        with patch.object(app_v2.threading, "Thread", ImmediateThread), \
+             patch.object(app_v2, "sample_benchmark_candidate", side_effect=sample), \
+             patch.object(app_v2, "apply_settings", return_value={"ok": True}) as apply:
+            app_v2.start_full_benchmark_runner("bench_001")
+        self.assertEqual(seen, [1])
+        self.assertEqual(apply.call_args.kwargs["frequency"], 600)
+        self.assertEqual(json.loads(self.benchmark_path.read_text())["bench_001"]["state"], "canceled")
+
+    def test_full_runner_rejects_concurrent_runner(self):
+        self.full_run_fixture()
+        app_v2.BENCHMARK_RUNNERS["bench_001"] = {"status": "running", "mode": "manual"}
+        with self.assertRaisesRegex(ValueError, "already running"):
+            app_v2.start_full_benchmark_runner("bench_001")
+
+    def test_failed_final_restore_requires_recovery_and_preserves_lock(self):
+        self.full_run_fixture()
+        profile = app_v2.benchmark_restore.get_restore_profile(self.restore_path, "bench_001")
+        with patch.object(app_v2, "apply_settings", side_effect=TimeoutError("offline")):
+            with self.assertRaisesRegex(TimeoutError, "offline"):
+                app_v2.complete_full_benchmark("bench_001", profile)
+        session = json.loads(self.benchmark_path.read_text())["bench_001"]
+        self.assertEqual(session["state"], "failed")
+        self.assertTrue(session["recovery_required"])
+        self.assertIn("TestMiner", json.loads(self.locks_path.read_text()))
+
 
 if __name__ == "__main__":
     unittest.main()
