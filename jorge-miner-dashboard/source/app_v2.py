@@ -2151,6 +2151,43 @@ def get_thermal_limit(name):
         return 68
     return 70
 
+
+def dashboard_health(miners):
+    """Return the web dashboard's existing weighted health score."""
+    total_expected = sum(float(miner.get("expected_th") or 1) for miner in miners) or 1
+    health = 100.0
+    for miner in miners:
+        weight = float(miner.get("expected_th") or 1) / total_expected
+        if not miner.get("online") or float(miner.get("th") or 0) <= 0:
+            health -= 100 * weight
+            continue
+        thermal_limit = float(miner.get("thermal_limit") or 0)
+        risk = (float(miner.get("temp") or 0) / thermal_limit * 100) if thermal_limit else 0
+        if risk >= 100:
+            health -= 35 * weight
+        elif risk >= 97:
+            health -= 25 * weight
+        elif risk >= 95:
+            health -= 18 * weight
+        elif risk >= 90:
+            health -= 9 * weight
+        reject = float(miner.get("reject") or 0)
+        if reject >= 2:
+            health -= 8 * weight
+        elif reject >= 1:
+            health -= 4 * weight
+    # Math.floor(x + 0.5) matches JavaScript Math.round for this 0..100 score.
+    return max(0, min(100, math.floor(health + 0.5)))
+
+
+def dashboard_alert_count(miners):
+    """Count the same actionable miner statuses displayed by the web UI."""
+    return sum(
+        1 for miner in miners
+        if miner.get("status") in ("COOLING", "MAX COOLING", "OFFLINE")
+    )
+
+
 def benchmark_status_active(name):
     lock = thermal_locks.active_lock_for(name, thermal_locks.load_locks(THERMAL_LOCKS_PATH))
     return lock and str(lock.get("locked_by", "")).strip().lower() == "benchmark"
@@ -2482,6 +2519,8 @@ def collect_dashboard_snapshot():
     return {
         "updated": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
         "miners": results,
+        "health": dashboard_health(results),
+        "alert_count": dashboard_alert_count(results),
         "runs": active_runs,
         "odds": build_odds(results, active_runs),
         "braiins": braiins,
@@ -2510,6 +2549,8 @@ def empty_dashboard_snapshot():
     return {
         "updated": "Starting...",
         "miners": [],
+        "health": dashboard_health([]),
+        "alert_count": dashboard_alert_count([]),
         "runs": {},
         "odds": {},
         "braiins": {"available": False, "workers": []},

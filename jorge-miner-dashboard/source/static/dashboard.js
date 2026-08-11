@@ -41,26 +41,6 @@ function escapeHtml(value) {
         .replaceAll("'", '&#039;');
 }
 
-function calculateHealth(miners) {
-    let totalExpected = miners.reduce((sum, miner) => sum + (miner.expected_th || 1), 0) || 1;
-    let health = 100;
-    miners.forEach(miner => {
-        const weight = (miner.expected_th || 1) / totalExpected;
-        if (!miner.online || miner.th <= 0) {
-            health -= 100 * weight;
-            return;
-        }
-        const risk = (miner.temp / miner.thermal_limit) * 100;
-        if (risk >= 100) health -= 35 * weight;
-        else if (risk >= 97) health -= 25 * weight;
-        else if (risk >= 95) health -= 18 * weight;
-        else if (risk >= 90) health -= 9 * weight;
-        if (miner.reject >= 2) health -= 8 * weight;
-        else if (miner.reject >= 1) health -= 4 * weight;
-    });
-    return Math.max(0, Math.min(100, Math.round(health)));
-}
-
 function onlineColorClass(online, total) {
     if (online === total) return 'green-text';
     if (online === 0) return 'red-text';
@@ -140,7 +120,6 @@ function renderMinerDashboard(data) {
     miners.forEach(miner => {
         totalTH += miner.th || 0;
         if (miner.online) online++;
-        if (['COOLING', 'MAX COOLING', 'OFFLINE'].includes(miner.status)) alerts++;
         const card = document.createElement('div');
         card.className = `mobile-card ${miner.status_class || miner.status}`;
         card.innerHTML = `
@@ -152,13 +131,14 @@ function renderMinerDashboard(data) {
         grid.appendChild(card);
     });
 
-    const health = calculateHealth(miners);
+    const health = Number.isFinite(data.health) ? data.health : null;
+    alerts = Number.isFinite(data.alert_count) ? data.alert_count : null;
     setText('updated', `Updated: ${data.updated}`);
     setText('mobileTotal', `${totalTH.toFixed(2)} TH`);
     el('mobileSummary').innerHTML =
         `<span class="${onlineColorClass(online, miners.length)}">Online ${online}/${miners.length}</span>` +
-        ` | <span class="${healthColorClass(health)}">Health ${health}%</span>` +
-        ` | <span class="${alertsColorClass(alerts)}">Alerts ${alerts}</span>`;
+        ` | <span class="${health === null ? '' : healthColorClass(health)}">Health ${health === null ? '--' : health + '%'}</span>` +
+        ` | <span class="${alerts === null ? '' : alertsColorClass(alerts)}">Alerts ${alerts === null ? '--' : alerts}</span>`;
 
     const system = data.system_status || {};
     el('thermalMgmtStatus').innerHTML = `Thermal Management <span style="color:${system.thermal_management ? '#4ade80' : '#ef4444'}">●</span> ${system.thermal_management ? 'Online' : 'Offline'}`;

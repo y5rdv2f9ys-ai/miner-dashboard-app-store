@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+container_id="$(docker ps \
+    --filter label=com.docker.compose.project=jorge-miner-dashboard \
+    --filter label=com.docker.compose.service=dashboard \
+    --format '{{.ID}}' | sed -n '1p')"
+
+if [ -z "$container_id" ]; then
+    echo "Jorge Miner Dashboard container is not running." >&2
+    exit 1
+fi
+
+exec docker exec -it "$container_id" miners-tui "$@"
