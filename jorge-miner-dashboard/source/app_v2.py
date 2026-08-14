@@ -2654,7 +2654,7 @@ def get_network_difficulty(coin):
 def probability_for_hashrate(th, seconds, difficulty):
     import math
 
-    if th <= 0 or seconds <= 0 or difficulty <= 0:
+    if th <= 0 or seconds <= 0 or difficulty is None or difficulty <= 0:
         return 0.0
 
     hashes = th * 1_000_000_000_000 * seconds
