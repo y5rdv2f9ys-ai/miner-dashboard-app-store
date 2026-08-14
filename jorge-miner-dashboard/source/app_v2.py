@@ -26,6 +26,7 @@ from discord_alerts import DiscordAlertManager
 from miner_api import apply_settings, get_system_info, normalized_stats
 
 APP_DIR = Path(__file__).resolve().parent
+APP_START_TIME = time.time()
 DATA_DIR = Path(os.environ.get("MINER_DASHBOARD_DATA_DIR", APP_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -65,6 +66,7 @@ BENCHMARK_REPORT_RETENTION_DAYS = 7
 THERMAL_LOCKS_PATH = DATA_DIR / "thermal_locks.json"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
+APP_MANIFEST_PATH = APP_DIR.parent / "umbrel-app.yml"
 BTC_BLOCKS_DB = Path(
     os.environ.get("PUBLIC_POOL_DB_PATH", "/public-pool/public-pool.sqlite")
 )
@@ -2031,6 +2033,189 @@ def file_recent(path, max_age_seconds=180):
     except Exception:
         return False
 
+def file_metadata(path):
+    try:
+        stat = path.stat()
+        return {"updated_epoch": stat.st_mtime, "size_bytes": stat.st_size}
+    except OSError:
+        return {"updated_epoch": None, "size_bytes": None}
+
+def application_version():
+    try:
+        for line in APP_MANIFEST_PATH.read_text().splitlines():
+            if line.startswith("version:"):
+                return line.split(":", 1)[1].strip().strip('"\'') or None
+    except OSError:
+        pass
+    return None
+
+def application_diagnostics(snapshot=None):
+    snapshot = snapshot or get_dashboard_snapshot() or empty_dashboard_snapshot()
+    snapshot_epoch = snapshot.get("updated_epoch")
+    return {
+        "version": application_version(),
+        "uptime_seconds": max(0, int(time.time() - APP_START_TIME)),
+        "snapshot_updated": snapshot.get("updated"),
+        "snapshot_age_seconds": max(0, int(time.time() - snapshot_epoch)) if isinstance(snapshot_epoch, (int, float)) else None,
+        "thermal": file_metadata(THERMAL_HEARTBEAT_PATH),
+        "history": file_metadata(HISTORY_PATH),
+        "storage": {
+            "history_bytes": file_metadata(HISTORY_PATH)["size_bytes"],
+            "thermal_log_bytes": file_metadata(LOG_PATH)["size_bytes"],
+            "benchmark_bytes": sum(
+                (file_metadata(path)["size_bytes"] or 0)
+                for path in (BENCHMARK_SESSIONS_PATH, BENCHMARK_RESULTS_PATH, BENCHMARK_RESTORE_PATH)
+            ),
+        },
+    }
+
+def normalize_fleet(local_miners, braiins):
+    """Add exact-name-matched Braiins workers without duplicating local miners."""
+    fleet = []
+    local_names = {}
+    for miner in local_miners:
+        item = dict(miner)
+        item.update({
+            "location_scope": "LOCAL",
+            "management": "MANAGED" if item.get("thermal_enabled", True) else "UNMANAGED",
+        })
+        fleet.append(item)
+        key = str(item.get("name", "")).strip().casefold()
+        if key:
+            local_names.setdefault(key, []).append(item)
+
+    for worker in (braiins or {}).get("workers", []) or []:
+        name = str(worker.get("name", "")).strip()
+        if not name:
+            continue
+        matches = local_names.get(name.casefold(), [])
+        if len(matches) == 1:
+            matches[0]["braiins_worker"] = {
+                "state": worker.get("state", "unknown"),
+                "hash_rate_5m_th": worker.get("hash_rate_5m_th"),
+                "hash_rate_60m_th": worker.get("hash_rate_60m_th"),
+                "hash_rate_24h_th": worker.get("hash_rate_24h_th"),
+            }
+            continue
+        if matches:
+            # Ambiguous configured names cannot safely be classified or counted.
+            continue
+        hash_5m = float(worker.get("hash_rate_5m_th", 0) or 0)
+        hash_60m = float(worker.get("hash_rate_60m_th", 0) or 0)
+        active = hash_5m > 0 or hash_60m > 0
+        fleet.append({
+            "name": name, "location_scope": "OFF-SITE", "management": "UNMANAGED",
+            "online": active, "status": "OFF-SITE" if active else "OFF-SITE INACTIVE",
+            "status_class": "OFF-SITE" if active else "OFF-SITE-INACTIVE",
+            "th": hash_5m, "hash_rate_5m_th": worker.get("hash_rate_5m_th"),
+            "hash_rate_60m_th": worker.get("hash_rate_60m_th"),
+            "hash_rate_24h_th": worker.get("hash_rate_24h_th"),
+            "worker_state": worker.get("state", "unknown"), "pool": "Braiins", "coin": "BTC",
+        })
+    return fleet
+
+def fleet_summary(fleet):
+    """Return authoritative mixed-fleet activity counts."""
+    local = [miner for miner in fleet if miner.get("location_scope", "LOCAL") == "LOCAL"]
+    offsite = [miner for miner in fleet if miner.get("location_scope") == "OFF-SITE"]
+
+    def local_is_active(miner):
+        try:
+            return bool(miner.get("online")) and float(miner.get("th", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def offsite_is_active(miner):
+        return miner.get("status") == "OFF-SITE"
+
+    local_online = sum(1 for miner in local if local_is_active(miner))
+    offsite_mining = sum(1 for miner in offsite if offsite_is_active(miner))
+    return {
+        "active": local_online + offsite_mining,
+        "total": len(fleet),
+        "local_online": local_online,
+        "local_total": len(local),
+        "offsite_mining": offsite_mining,
+        "offsite_total": len(offsite),
+    }
+
+def solo_pool_summary(fleet, pool):
+    """Summarize configured local assignments and current active hashrate."""
+    assigned = []
+    for miner in fleet:
+        if miner.get("location_scope", "LOCAL") != "LOCAL" or miner.get("pool") != pool:
+            continue
+        try:
+            hashrate = float(miner.get("th", 0) or 0)
+        except (TypeError, ValueError):
+            hashrate = 0.0
+        active = bool(miner.get("online")) and hashrate > 0
+        assigned.append({
+            "name": miner.get("name", ""),
+            "active": active,
+            "hashrate_th": hashrate if active else 0.0,
+        })
+    return {
+        "assigned_miners": assigned,
+        "assigned_count": len(assigned),
+        "active_count": sum(1 for miner in assigned if miner["active"]),
+        "current_hashrate_th": sum(miner["hashrate_th"] for miner in assigned),
+    }
+
+def normalized_braiins_workers(fleet):
+    """Build worker rows from normalized fleet identity and match results."""
+    workers = []
+    for miner in fleet:
+        scope = miner.get("location_scope", "LOCAL")
+        if scope == "LOCAL":
+            worker = miner.get("braiins_worker")
+            if not isinstance(worker, dict):
+                continue
+            row = {"name": miner.get("name", ""), "scope": "LOCAL", **worker}
+        elif scope == "OFF-SITE" and miner.get("pool") == "Braiins":
+            row = {
+                "name": miner.get("name", ""),
+                "scope": "OFF-SITE",
+                "state": miner.get("worker_state", "unknown"),
+                "hash_rate_5m_th": miner.get("hash_rate_5m_th"),
+                "hash_rate_60m_th": miner.get("hash_rate_60m_th"),
+                "hash_rate_24h_th": miner.get("hash_rate_24h_th"),
+            }
+        else:
+            continue
+        workers.append(row)
+    workers.sort(key=lambda worker: float(worker.get("hash_rate_5m_th", 0) or 0), reverse=True)
+    return workers
+
+def recent_thermal_events(limit=100, max_bytes=65536):
+    """Return a bounded tail of the existing thermal log, newest first."""
+    limit = max(1, min(int(limit), 200))
+    try:
+        with LOG_PATH.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - max_bytes))
+            data = stream.read(max_bytes)
+    except OSError:
+        return []
+
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]
+    events = []
+    for line in reversed(lines):
+        message = line.strip()
+        if not message:
+            continue
+        upper = message.upper()
+        level = "ERROR" if "ERROR" in upper or "CRITICAL" in upper else (
+            "WARNING" if "WARN" in upper or "COOLING" in upper or "LOWERING" in upper else "INFO"
+        )
+        events.append({"level": level, "message": message})
+        if len(events) >= limit:
+            break
+    return events
+
 def fetch_braiins_json(path):
     token = BRAIINS_TOKEN_PATH.read_text().strip()
     request = Request(
@@ -2154,6 +2339,7 @@ def get_thermal_limit(name):
 
 def dashboard_health(miners):
     """Return the web dashboard's existing weighted health score."""
+    miners = [miner for miner in miners if miner.get("location_scope", "LOCAL") == "LOCAL"]
     total_expected = sum(float(miner.get("expected_th") or 1) for miner in miners) or 1
     health = 100.0
     for miner in miners:
@@ -2184,7 +2370,8 @@ def dashboard_alert_count(miners):
     """Count the same actionable miner statuses displayed by the web UI."""
     return sum(
         1 for miner in miners
-        if miner.get("status") in ("COOLING", "MAX COOLING", "OFFLINE")
+        if miner.get("location_scope", "LOCAL") == "LOCAL"
+        and miner.get("status") in ("COOLING", "MAX COOLING", "OFFLINE")
     )
 
 
@@ -2224,6 +2411,7 @@ def read_miner(miner):
             "pool": miner.get("pool", "Unknown"),
             "coin": miner.get("coin", ""),
             "online": True,
+            "thermal_enabled": miner.get("enabled", True),
             "temp": temp,
             "vr_temp": vr_temp,
             "freq": freq,
@@ -2245,6 +2433,7 @@ def read_miner(miner):
             "pool": miner.get("pool", "Unknown"),
             "coin": miner.get("coin", ""),
             "online": False,
+            "thermal_enabled": miner.get("enabled", True),
             "temp": 0,
             "vr_temp": -1,
             "freq": 0,
@@ -2313,7 +2502,7 @@ def record_history(miners):
                 "temp": m["temp"]
             })
 
-def get_performance():
+def get_performance(snapshot=None):
     miners = load_miners()
     names = [m["name"] for m in miners]
     result = {}
@@ -2330,7 +2519,8 @@ def get_performance():
         }
 
     if not os.path.exists(HISTORY_PATH):
-        return list(result.values())
+        performance = list(result.values())
+        return append_offsite_performance(performance, snapshot)
 
     now = time.time()
     windows = {
@@ -2380,7 +2570,30 @@ def get_performance():
     except:
         pass
 
-    return list(result.values())
+    return append_offsite_performance(list(result.values()), snapshot)
+
+def append_offsite_performance(performance, snapshot=None):
+    """Append unmatched remote workers using only Braiins-provided windows."""
+    rows = list(performance)
+    names = {str(item.get("name", "")) for item in rows}
+    snapshot = snapshot or get_dashboard_snapshot() or {}
+    for miner in snapshot.get("miners", []) or []:
+        name = str(miner.get("name", ""))
+        if miner.get("location_scope") != "OFF-SITE" or not name or name in names:
+            continue
+        rows.append({
+            "name": name,
+            "location_scope": "OFF-SITE",
+            "th_now": miner.get("hash_rate_5m_th"),
+            "th_60m": miner.get("hash_rate_60m_th"),
+            "th_12h": None,
+            "th_24h": miner.get("hash_rate_24h_th"),
+            "temp_60m": None,
+            "temp_12h": None,
+            "temp_24h": None,
+        })
+        names.add(name)
+    return rows
 
 
 # =========================
@@ -2515,10 +2728,19 @@ def collect_dashboard_snapshot():
     solopool = fetch_solopool_stats()
     braiins = fetch_braiins_stats()
     ALERT_MANAGER.process(results, solopool.get("blocks", []))
+    fleet = normalize_fleet(results, braiins)
+    solo_pools = {
+        "Umbrel Solo": solo_pool_summary(fleet, "Umbrel Solo"),
+        "BCH SoloPool": solo_pool_summary(fleet, "BCH SoloPool"),
+    }
 
     return {
         "updated": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
-        "miners": results,
+        "updated_epoch": time.time(),
+        "miners": fleet,
+        "fleet_summary": fleet_summary(fleet),
+        "solo_pools": solo_pools,
+        "braiins_workers": normalized_braiins_workers(fleet),
         "health": dashboard_health(results),
         "alert_count": dashboard_alert_count(results),
         "runs": active_runs,
@@ -2548,7 +2770,14 @@ def get_dashboard_snapshot():
 def empty_dashboard_snapshot():
     return {
         "updated": "Starting...",
+        "updated_epoch": None,
         "miners": [],
+        "fleet_summary": fleet_summary([]),
+        "solo_pools": {
+            "Umbrel Solo": solo_pool_summary([], "Umbrel Solo"),
+            "BCH SoloPool": solo_pool_summary([], "BCH SoloPool"),
+        },
+        "braiins_workers": [],
         "health": dashboard_health([]),
         "alert_count": dashboard_alert_count([]),
         "runs": {},
@@ -2635,23 +2864,10 @@ def build_page3_payload(snapshot):
         [miner.get("best_diff") for miner in bch_miners] + [solopool.get("best_share")]
     )
 
-    workers = []
-    for worker in braiins.get("workers", []) or []:
-        try:
-            hash_5m = float(worker.get("hash_rate_5m_th", 0) or 0)
-            hash_60m = float(worker.get("hash_rate_60m_th", 0) or 0)
-        except (TypeError, ValueError):
-            hash_5m = 0.0
-            hash_60m = 0.0
-        if hash_5m > 0 or hash_60m > 0:
-            workers.append({
-                "name": worker.get("name", ""),
-                "state": worker.get("state", "unknown"),
-                "hash_rate_5m_th": hash_5m,
-                "hash_rate_60m_th": hash_60m,
-                "hash_rate_24h_th": worker.get("hash_rate_24h_th"),
-            })
-    workers.sort(key=lambda worker: worker["hash_rate_5m_th"], reverse=True)
+    workers = normalized_braiins_workers(miners)
+    solo_summaries = snapshot.get("solo_pools", {}) or {}
+    btc_summary = solo_summaries.get("Umbrel Solo") or solo_pool_summary(miners, "Umbrel Solo")
+    bch_summary = solo_summaries.get("BCH SoloPool") or solo_pool_summary(miners, "BCH SoloPool")
 
     return {
         "updated": snapshot.get("updated"),
@@ -2671,6 +2887,7 @@ def build_page3_payload(snapshot):
                 for miner in btc_miners
                 if is_hashing(miner)
             ],
+            **btc_summary,
             "session_best": btc_session_best,
             "historic_best": btc_historic_best,
             "best_network_pct": best_network_pct(btc_historic_best, btc_odds["difficulty"]),
@@ -2686,6 +2903,7 @@ def build_page3_payload(snapshot):
                 for miner in bch_miners
                 if is_hashing(miner)
             ],
+            **bch_summary,
             "session_best": bch_session_best,
             "historic_best": bch_historic_best,
             "best_network_pct": best_network_pct(bch_historic_best, bch_odds["difficulty"]),
@@ -3125,9 +3343,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/performance":
             with STATE_LOCK:
+                snapshot = get_dashboard_snapshot() or empty_dashboard_snapshot()
                 payload = {
                     "updated": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
-                    "performance": get_performance()
+                    "performance": get_performance(snapshot)
                 }
 
             body = json.dumps(payload).encode("utf-8")
@@ -3136,6 +3355,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        if self.path == "/api/diagnostics":
+            self.send_json(200, application_diagnostics())
+            return
+
+        if parsed.path == "/api/events":
+            raw_limit = (parse_qs(parsed.query).get("limit") or ["100"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 100
+            self.send_json(200, {
+                "updated": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                "events": recent_thermal_events(limit),
+            })
             return
 
         if self.path == "/download-log":

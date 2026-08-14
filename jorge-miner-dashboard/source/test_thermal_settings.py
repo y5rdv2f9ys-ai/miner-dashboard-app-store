@@ -298,6 +298,27 @@ class ThermalSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(LookupError, "not found"):
             app_v2.start_benchmark_session({"miner": "Missing"})
 
+    def test_thermal_unmanaged_local_miner_remains_benchmark_eligible(self):
+        unmanaged = dict(self.original, enabled=False)
+        self.path.write_text(json.dumps([unmanaged]))
+        with patch.object(
+            app_v2,
+            "normalized_stats",
+            return_value={"freq": 600, "volt": 1150, "temp": 61.5},
+        ):
+            session = app_v2.start_benchmark_session({"miner": "TestMiner"})
+        self.assertEqual(session["miner"], "TestMiner")
+        self.assertEqual(session["state"], "completed")
+
+    def test_derived_offsite_worker_cannot_start_benchmark(self):
+        with self.assertRaisesRegex(LookupError, "not found"):
+            app_v2.start_benchmark_session({"miner": "Remote-S21"})
+
+    def test_ambiguous_configured_name_cannot_start_benchmark(self):
+        self.path.write_text(json.dumps([self.original, dict(self.original)]))
+        with self.assertRaisesRegex(LookupError, "not unique"):
+            app_v2.start_benchmark_session({"miner": "TestMiner"})
+
     def test_start_benchmark_session_captures_restore_and_lock_before_completion(self):
         events = []
 

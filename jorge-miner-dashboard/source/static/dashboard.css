@@ -23,7 +23,7 @@ html, body {
 
 .swipe-track {
     display: flex;
-    width: 400vw;
+    width: max-content;
     height: 100vh;
 }
 
@@ -71,6 +71,12 @@ h1 {
     line-height: 1.25;
 }
 
+.fleet-breakdown {
+    margin-top: 3px;
+    color: #9299a5;
+    font-size: 11px;
+}
+
 .green-text { color: #35d04f; }
 .yellow-text { color: #ffd84d; }
 .red-text { color: #ff4d4d; }
@@ -96,6 +102,22 @@ h1 {
 .mobile-card.orange { border-color: orange; }
 .mobile-card.red { border-color: #ff4d4d; }
 .mobile-card.gray { border-color: #777; }
+.mobile-card.OFF-SITE { border-color: #38bdf8; }
+.mobile-card.OFF-SITE-INACTIVE { border-color: #64748b; }
+
+.offsite-card { background: linear-gradient(145deg, #13202a, #11151a); }
+
+.offsite-card .remote-details {
+    line-height: 1.55;
+}
+
+.scope-label {
+    margin-bottom: 3px;
+    color: #9299a5;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: .04em;
+}
 
 .miner-name {
     font-size: 12px;
@@ -144,6 +166,8 @@ h1 {
 .status.MAX-COOLING { background: #991b1b; }
 .status.BENCHMARK { background: #0f766e; }
 .status.OFFLINE { background: #444; }
+.status.OFF-SITE { background: #075985; }
+.status.OFF-SITE-INACTIVE { background: #334155; }
 
 .legend {
     margin-top: 10px;
@@ -493,11 +517,18 @@ svg {
 
 
 .thermal-strip {
-    margin: 8px 0 8px 0;
-    text-align: center;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 5px 14px;
+    margin: 10px 0 8px;
     font-size: 15px;
     color: #d0d0d0;
     line-height: 1.4;
+}
+
+.thermal-strip span {
+    white-space: nowrap;
 }
 
 .thermal-strip .stable { color: #4ade80; font-weight: 600; }
@@ -2891,6 +2922,32 @@ svg {
     white-space: nowrap;
 }
 
+.solo-miner-list {
+    margin-top: 7px;
+    border-top: 1px solid rgba(255,255,255,.07);
+}
+
+.solo-miner-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(48px, auto) minmax(52px, auto);
+    column-gap: 10px;
+    align-items: center;
+    min-height: 23px;
+    font-size: 9px;
+}
+
+.solo-miner-row > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.solo-miner-row small.active { color: #4ade80; }
+.solo-miner-row small.offline { color: #94a3b8; }
+.solo-miner-row small { text-align: center; white-space: nowrap; }
+.solo-miner-row b { text-align: right; white-space: nowrap; }
+.solo-empty { padding-top: 6px; color: #8992a1; font-size: 9px; }
+
 .status-dot {
     display: inline-block;
     width: 6px;
@@ -3196,6 +3253,8 @@ svg {
 }
 
 .dashboard-page .swipe-hint {
+    position: static;
+    flex: 0 0 auto;
     margin-top: 0;
     padding-top: 0;
     padding-bottom: 0;
@@ -3210,6 +3269,13 @@ svg {
 
 .perf-page .perf-table-wrap {
     margin-top: 18px !important;
+}
+
+.perf-page .performance-summary {
+    position: static;
+    clear: both;
+    margin-top: 14px;
+    line-height: 1.4;
 }
 
 .perf-page .swipe-hint {
@@ -3265,7 +3331,6 @@ svg {
 
     .dashboard-page .mobile-grid {
         min-height: 340px;
-        max-height: 430px;
         margin-top: 24px;
     }
 

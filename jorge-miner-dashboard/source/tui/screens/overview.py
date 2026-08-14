@@ -9,15 +9,18 @@ from .base import MinerTableScreen, service_label
 
 
 class OverviewScreen(MinerTableScreen):
+    def visible_columns(self) -> tuple[str, ...]:
+        return ("State", "Miner", "TH/s", "ASIC", "Thermal")
     def compose(self) -> ComposeResult:
         yield Static("JORGE MINER DASHBOARD · READ ONLY", classes="app-title")
         yield Static("OVERVIEW", classes="screen-title")
         with Horizontal(id="summary-row"):
             yield Static("Hashrate\n—", id="total-hash", classes="summary-card")
-            yield Static("Online\n—", id="online-count", classes="summary-card")
+            yield Static("Active\n—", id="online-count", classes="summary-card")
             yield Static("Health\n—", id="health", classes="summary-card")
             yield Static("Alerts\n—", id="alerts", classes="summary-card")
         yield Static("Services: —", id="services")
+        yield Static("Fleet scope: —", id="fleet-scope")
         yield DataTable(id=self.table_id)
         yield Static("1 Overview  2 Miners  3 Performance  4 Thermal  5 Pools  6 Events  7 System", classes="nav-line")
         yield Static("API: connecting…", id="api-status")
@@ -36,10 +39,17 @@ class OverviewScreen(MinerTableScreen):
         system = snapshot.get("system_status", {}) if isinstance(snapshot, dict) else {}
         system = system if isinstance(system, dict) else {}
         self.query_one("#total-hash", Static).update(f"Hashrate\n[bold]{total_hashrate(miners):.2f} TH/s[/]")
-        self.query_one("#online-count", Static).update(f"Online\n[bold]{online}/{len(miners)}[/]")
+        self.query_one("#online-count", Static).update(f"Active\n[bold]{online}/{len(miners)}[/]")
         self.query_one("#health", Static).update(f"Health\n[bold]{health if health is not None else '—'}{'%' if health is not None else ''}[/]")
         self.query_one("#alerts", Static).update(f"Alerts\n[bold]{alerts if alerts is not None else '—'}[/]")
         self.query_one("#services", Static).update(
             "Thermal service: " + service_label(system.get("thermal_management"))
             + "   History/logging: " + service_label(system.get("miner_logging"))
+        )
+        local = [miner for miner in miners if miner.get("location_scope", "LOCAL") == "LOCAL"]
+        remote = [miner for miner in miners if miner.get("location_scope") == "OFF-SITE"]
+        local_online = sum(miner.get("online") is True for miner in local)
+        remote_mining = sum(miner.get("online") is True for miner in remote)
+        self.query_one("#fleet-scope", Static).update(
+            f"Local [bold]{local_online}/{len(local)} online[/]   Off-site [bold]{remote_mining}/{len(remote)} mining[/]"
         )

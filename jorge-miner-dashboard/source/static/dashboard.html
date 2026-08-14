@@ -28,7 +28,8 @@
         </div>
     </div>
     <div class="footer" id="updated">Loading...</div>
-    <div class="mobile-summary-line" id="mobileSummary">Online -- | Health -- | Alerts --</div>
+    <div class="mobile-summary-line" id="mobileSummary">Active -- | Health -- | Alerts --</div>
+    <div class="fleet-breakdown" id="fleetBreakdown">Local -- online · Off-site -- mining</div>
     <div class="mobile-grid" id="minerGrid"></div>
     <div class="legend">
         <div class="legend-item"><div class="dot green"></div><div>STABLE</div></div>
@@ -63,7 +64,7 @@
             <tbody id="perfRows"></tbody>
         </table>
     </div>
-    <div class="footer" style="margin-top:10px;">
+    <div class="footer performance-summary">
         Rolling hashrate averages · Temps are live
         <div id="thermalStrip" class="thermal-strip">
             <span class="stable">Stable 0</span>&nbsp;&nbsp;
@@ -98,6 +99,7 @@
                 <div><span class="status-dot"></span><b>BTC SOLO</b><small id="btcSoloMiners">--</small></div>
                 <strong id="btcSoloHash">-- TH</strong>
             </div>
+            <div class="solo-miner-list" id="btcSoloMinerList"></div>
             <div class="diff-focus">
                 <div><small>SESSION BEST</small><b id="btcSessionBest">--</b></div>
                 <div><small>HISTORIC BEST</small><b id="btcHistoricBest">--</b></div>
@@ -115,6 +117,7 @@
                 <div><span class="status-dot"></span><b>BCH SOLO</b><small id="bchSoloMiners">--</small></div>
                 <strong id="bchSoloHash">-- TH</strong>
             </div>
+            <div class="solo-miner-list" id="bchSoloMinerList"></div>
             <div class="diff-focus">
                 <div><small>SESSION BEST</small><b id="bchSessionBest">--</b></div>
                 <div><small>HISTORIC BEST</small><b id="bchHistoricBest">--</b></div>

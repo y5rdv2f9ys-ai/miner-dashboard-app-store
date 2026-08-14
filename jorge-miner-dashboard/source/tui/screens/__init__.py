@@ -2,6 +2,9 @@
 
 from .miners import MinerDetailScreen, MinersScreen
 from .overview import OverviewScreen
-from .placeholder import PlaceholderScreen
+from .operations import EventsScreen, PerformanceScreen, PoolsScreen, SystemScreen, ThermalScreen
 
-__all__ = ["MinerDetailScreen", "MinersScreen", "OverviewScreen", "PlaceholderScreen"]
+__all__ = [
+    "EventsScreen", "MinerDetailScreen", "MinersScreen", "OverviewScreen",
+    "PerformanceScreen", "PoolsScreen", "SystemScreen", "ThermalScreen",
+]

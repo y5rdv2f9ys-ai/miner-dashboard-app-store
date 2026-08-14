@@ -28,6 +28,10 @@ def is_online(miner: dict) -> bool:
     return miner.get("online") is True
 
 
+def is_offsite(miner: dict) -> bool:
+    return miner.get("location_scope") == "OFF-SITE"
+
+
 def total_hashrate(miners: list[dict]) -> float:
     total = 0.0
     for miner in miners:

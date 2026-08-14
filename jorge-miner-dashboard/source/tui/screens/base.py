@@ -4,7 +4,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import DataTable, Static
 
-from ..formatting import integer, is_online, number, text
+from ..formatting import integer, is_offsite, is_online, number, text
 
 
 class MinerTableScreen(Screen):
@@ -52,6 +52,24 @@ class MinerTableScreen(Screen):
             columns.remove("VR")
         return tuple(columns)
 
+    def row_values(self, miner: dict) -> dict[str, str]:
+        offsite = is_offsite(miner)
+        state = (
+            "[cyan]● OFF-SITE[/]" if is_online(miner) else "[dim]● REMOTE IDLE[/]"
+        ) if offsite else ("[green]● ON[/]" if is_online(miner) else "[red]● OFF[/]")
+        return {
+            "State": state,
+            "Miner": text(miner.get("name")),
+            "TH/s": number(miner.get("th"), 2),
+            "ASIC": number(miner.get("temp"), 1, "°"),
+            "VR": number(miner.get("vr_temp"), 1, "°") if miner.get("vr_temp") not in (-1, "-1") else "—",
+            "MHz": integer(miner.get("freq")),
+            "mV": integer(miner.get("volt")),
+            "Reject": number(miner.get("reject"), 2, "%"),
+            "Thermal": "UNMANAGED" if offsite else text(miner.get("status")),
+            "Pool": text(miner.get("pool")),
+        }
+
     def selected_name(self) -> str | None:
         table = self.table
         if table.row_count and table.cursor_row is not None:
@@ -78,18 +96,7 @@ class MinerTableScreen(Screen):
             if not isinstance(miner, dict):
                 continue
             name = text(miner.get("name"))
-            values = {
-                "State": "[green]● ON[/]" if is_online(miner) else "[red]● OFF[/]",
-                "Miner": name,
-                "TH/s": number(miner.get("th"), 2),
-                "ASIC": number(miner.get("temp"), 1, "°"),
-                "VR": number(miner.get("vr_temp"), 1, "°") if miner.get("vr_temp") not in (-1, "-1") else "—",
-                "MHz": integer(miner.get("freq")),
-                "mV": integer(miner.get("volt")),
-                "Reject": number(miner.get("reject"), 2, "%"),
-                "Thermal": text(miner.get("status")),
-                "Pool": text(miner.get("pool")),
-            }
+            values = self.row_values(miner)
             table.add_row(*(values[column] for column in columns), key=name)
             if name == selected:
                 target_row = index

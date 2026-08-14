@@ -47,6 +47,16 @@ function onlineColorClass(online, total) {
     return 'yellow-text';
 }
 
+function numeric(value) {
+    const result = Number(value);
+    return value === null || value === undefined || !Number.isFinite(result) ? null : result;
+}
+
+function metricValue(value, decimals = 1, suffix = '') {
+    const result = numeric(value);
+    return result === null ? '—' : `${result.toFixed(decimals)}${suffix}`;
+}
+
 function alertsColorClass(alerts) {
     if (alerts >= 5) return 'red-text';
     if (alerts >= 3) return 'orange-text';
@@ -114,31 +124,44 @@ function renderMinerDashboard(data) {
     const grid = el('minerGrid');
     grid.innerHTML = '';
     let totalTH = 0;
-    let online = 0;
-    let alerts = 0;
 
     miners.forEach(miner => {
-        totalTH += miner.th || 0;
-        if (miner.online) online++;
+        totalTH += numeric(miner.th) || 0;
+        const offsite = miner.location_scope === 'OFF-SITE';
+        const thermal = miner.management || (offsite ? 'UNMANAGED' : 'MANAGED');
+        const hash = metricValue(miner.th, 2);
+        const scopeLabel = offsite
+            ? ''
+            : (thermal === 'UNMANAGED' ? '<div class="scope-label">UNMANAGED</div>' : '');
+        const telemetry = offsite
+            ? `<div class="details remote-details">Pool ${escapeHtml(miner.pool || 'Braiins')}<br>Remote worker</div>`
+            : `<div class="temp">${metricValue(miner.temp, 1, '°C')}</div>
+               <div class="details">Pool ${escapeHtml(miner.pool || '—')}<br>${metricValue(miner.freq, 0, ' MHz')}<br>${metricValue(miner.volt, 0, ' mV')}<br>VR ${miner.vr_temp === -1 ? '—' : metricValue(miner.vr_temp, 1, '°C')}<br>Reject ${metricValue(miner.reject, 2, '%')}</div>`;
         const card = document.createElement('div');
-        card.className = `mobile-card ${miner.status_class || miner.status}`;
+        card.className = `mobile-card ${miner.status_class || miner.status} ${offsite ? 'offsite-card' : 'local-card'}`;
         card.innerHTML = `
             <div class="miner-name">${escapeHtml(miner.name)}</div>
-            <div class="hashrate">${miner.th.toFixed(2)} <small>TH</small></div>
-            <div class="temp">${miner.temp.toFixed(1)}°C</div>
-            <div class="details">${miner.freq} MHz<br>${miner.volt} V<br>VR ${miner.vr_temp >= 0 ? miner.vr_temp.toFixed(1) + '°C' : '--'}<br>${miner.reject.toFixed(2)}%</div>
+            ${scopeLabel}
+            <div class="hashrate">${hash} <small>TH</small></div>
+            ${telemetry}
             <div class="status ${miner.status_class || miner.status}">${escapeHtml(miner.status)}</div>`;
         grid.appendChild(card);
     });
 
     const health = Number.isFinite(data.health) ? data.health : null;
-    alerts = Number.isFinite(data.alert_count) ? data.alert_count : null;
+    const alerts = Number.isFinite(data.alert_count) ? data.alert_count : null;
+    const summary = data.fleet_summary || {};
+    const active = Number.isFinite(summary.active) ? summary.active : 0;
+    const total = Number.isFinite(summary.total) ? summary.total : miners.length;
     setText('updated', `Updated: ${data.updated}`);
     setText('mobileTotal', `${totalTH.toFixed(2)} TH`);
     el('mobileSummary').innerHTML =
-        `<span class="${onlineColorClass(online, miners.length)}">Online ${online}/${miners.length}</span>` +
+        `<span class="${onlineColorClass(active, total)}">Active ${active}/${total}</span>` +
         ` | <span class="${health === null ? '' : healthColorClass(health)}">Health ${health === null ? '--' : health + '%'}</span>` +
         ` | <span class="${alerts === null ? '' : alertsColorClass(alerts)}">Alerts ${alerts === null ? '--' : alerts}</span>`;
+    setText('fleetBreakdown',
+        `Local ${summary.local_online ?? 0}/${summary.local_total ?? 0} online · ` +
+        `Off-site ${summary.offsite_mining ?? 0}/${summary.offsite_total ?? 0} mining`);
 
     const system = data.system_status || {};
     el('thermalMgmtStatus').innerHTML = `Thermal Management <span style="color:${system.thermal_management ? '#4ade80' : '#ef4444'}">●</span> ${system.thermal_management ? 'Online' : 'Offline'}`;
@@ -160,7 +183,7 @@ function renderStrategy(data) {
     const bchOdds = odds['BCH SoloPool'] || {};
     const braiins = data.braiins || {};
     const solo = data.solopool || {};
-    const activeBraiinsWorkers = (braiins.workers || []).filter(
+    const activeBraiinsWorkers = (data.braiins_workers || []).filter(
         worker => worker.hash_rate_5m_th > 0 || worker.hash_rate_60m_th > 0
     );
     const btcSessionBest = Math.max(...btcMiners.map(m => m.best_session_diff || 0), 0);
@@ -182,8 +205,8 @@ function renderStrategy(data) {
         `<span class="bch-label">BCH Solo ${pct(bchTH).toFixed(1)}%</span>` +
         `<span class="braiins-label">Braiins ${pct(braiinsTH).toFixed(1)}%</span>`;
 
-    setText('btcSoloHash', `${btcTH.toFixed(2)} TH`);
-    setText('btcSoloMiners', btcMiners.map(m => m.name).join(', ') || 'No miners');
+    const soloPools = data.solo_pools || {};
+    renderSoloAssignment('btc', soloPools['Umbrel Solo'] || {});
     setText('btcSessionBest', formatDifficulty(btcSessionBest));
     setText('btcHistoricBest', formatDifficulty(btcHistoricBest));
     setText('btcNetworkDiff', formatDifficulty(btcOdds.difficulty));
@@ -191,8 +214,7 @@ function renderStrategy(data) {
     setText('btcSoloDay', formatOddsDen(btcOdds.day_den));
     setText('btcSoloMonth', formatOddsDen(btcOdds.month_den));
 
-    setText('bchSoloHash', `${bchTH.toFixed(2)} TH`);
-    setText('bchSoloMiners', bchMiners.map(m => m.name).join(', ') || 'No miners');
+    renderSoloAssignment('bch', soloPools['BCH SoloPool'] || {});
     setText('bchSessionBest', formatDifficulty(bchSessionBest));
     setText('bchHistoricBest', formatDifficulty(bchHistoricBest));
     setText('bchNetworkDiff', formatDifficulty(bchOdds.difficulty));
@@ -213,8 +235,23 @@ function renderStrategy(data) {
             <span>${escapeHtml(worker.name)}</span>
             <div><i style="width:${Math.max(3, (worker.hash_rate_5m_th / maxWorkerTH) * 100)}%"></i></div>
             <b>${worker.hash_rate_5m_th.toFixed(2)} TH</b>
-            <small>${escapeHtml(worker.state.toUpperCase())}</small>
+            <small>${escapeHtml(worker.scope)} · ${escapeHtml(String(worker.state || 'unknown').toUpperCase())}</small>
         </div>`).join('') : 'Braiins API unavailable or no workers';
+}
+
+function renderSoloAssignment(prefix, summary) {
+    const miners = summary.assigned_miners || [];
+    const activeCount = summary.active_count ?? 0;
+    const assignedCount = summary.assigned_count ?? miners.length;
+    setText(`${prefix}SoloHash`, `${Number(summary.current_hashrate_th || 0).toFixed(2)} TH`);
+    setText(`${prefix}SoloMiners`, `${activeCount}/${assignedCount} active · ${assignedCount} assigned`);
+    const list = el(`${prefix}SoloMinerList`);
+    list.innerHTML = miners.length ? miners.map(miner => `
+        <div class="solo-miner-row">
+            <span>${escapeHtml(miner.name)}</span>
+            <small class="${miner.active ? 'active' : 'offline'}">${miner.active ? 'ACTIVE' : 'OFFLINE'}</small>
+            <b>${Number(miner.hashrate_th || 0).toFixed(2)} TH</b>
+        </div>`).join('') : '<div class="solo-empty">No assigned miners</div>';
 }
 
 function fmt(value, decimals, suffix) {
@@ -230,19 +267,20 @@ async function loadPerformance() {
     const nowMap = Object.fromEntries(latestMiners.map(miner => [miner.name, miner]));
 
     sortMiners(data.performance || []).forEach(perf => {
-        const now = nowMap[perf.name] || {th: 0, temp: 0, vr_temp: -1};
+        const now = nowMap[perf.name] || {};
+        const nowTH = numeric(perf.th_now) ?? numeric(now.th);
         let cls = '';
-        if (perf.th_60m > 0) {
-            const ratio = now.th / perf.th_60m;
+        if (numeric(perf.th_60m) > 0 && nowTH !== null) {
+            const ratio = nowTH / perf.th_60m;
             cls = ratio >= 0.98 ? 'perf-good' : ratio >= 0.94 ? 'perf-warn' : 'perf-low';
         }
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>${escapeHtml(perf.name.replace('Bitaxe', 'BAxe'))}</td>
-            <td class="${cls}"><b>${now.th.toFixed(2)}</b><br><small>${now.freq || '--'} MHz</small></td>
+            <td class="${cls}"><b>${metricValue(nowTH, 2)}</b><br><small>${metricValue(now.freq, 0, ' MHz')}</small></td>
             <td>${fmt(perf.th_60m, 2, '')}</td><td>${fmt(perf.th_12h, 2, '')}</td>
             <td>${fmt(perf.th_24h, 2, '')}</td>
-            <td>${now.temp.toFixed(1)}/${now.vr_temp >= 0 ? now.vr_temp.toFixed(1) : '--'}°</td>`;
+            <td>${metricValue(now.temp, 1)}/${numeric(now.vr_temp) !== null && Number(now.vr_temp) >= 0 ? metricValue(now.vr_temp, 1) : '—'}°</td>`;
         rows.appendChild(row);
     });
 

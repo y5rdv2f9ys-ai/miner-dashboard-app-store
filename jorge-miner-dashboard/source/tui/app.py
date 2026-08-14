@@ -14,7 +14,10 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from .api_client import DashboardAPIClient, DashboardAPIError
-from .screens import MinerDetailScreen, MinersScreen, OverviewScreen, PlaceholderScreen
+from .screens import (
+    EventsScreen, MinerDetailScreen, MinersScreen, OverviewScreen, PerformanceScreen,
+    PoolsScreen, SystemScreen, ThermalScreen,
+)
 
 
 class HelpScreen(ModalScreen):
@@ -49,9 +52,17 @@ class MinerDashboardApp(App):
     .screen-subtitle { height: 2; padding: 0 2; color: #a1a1aa; }
     #summary-row { height: 5; padding: 0 1; }
     .summary-card { width: 1fr; height: 4; margin: 0 1; padding: 0 1; border: round #3f3f46; text-align: center; }
-    #services { height: 2; padding: 0 2; }
+    #services, #fleet-scope { height: 1; padding: 0 2; }
     DataTable { height: 1fr; margin: 0 1; border: round #3f3f46; }
     DataTable > .datatable--header { background: #27272a; color: #fafafa; text-style: bold; }
+    .content-scroll { height: 1fr; margin: 0 1; padding: 0 1; }
+    .section { width: 1fr; height: auto; min-height: 3; margin-bottom: 1; padding: 0 1; border: round #3f3f46; }
+    .section-title { text-style: bold; color: #fafafa; }
+    .compact-table { height: auto; max-height: 12; margin: 0; }
+    #allocation { height: auto; min-height: 6; }
+    #pool-details { height: auto; min-height: 8; }
+    #pool-workers { height: auto; min-height: 4; }
+    #events-table { height: 1fr; }
     #detail-scroll { margin: 0 2; padding: 1 2; border: round #3f3f46; }
     #detail-content { width: 1fr; }
     .placeholder { margin: 2; padding: 2; border: round #3f3f46; color: #a1a1aa; }
@@ -78,11 +89,11 @@ class MinerDashboardApp(App):
     SCREENS = {
         "overview": OverviewScreen,
         "miners": MinersScreen,
-        "performance": lambda: PlaceholderScreen("Performance"),
-        "thermal": lambda: PlaceholderScreen("Thermal"),
-        "pools": lambda: PlaceholderScreen("Pools"),
-        "events": lambda: PlaceholderScreen("Events"),
-        "system": lambda: PlaceholderScreen("System"),
+        "performance": PerformanceScreen,
+        "thermal": ThermalScreen,
+        "pools": PoolsScreen,
+        "events": EventsScreen,
+        "system": SystemScreen,
     }
 
     def __init__(
@@ -110,9 +121,9 @@ class MinerDashboardApp(App):
     async def refresh_data(self) -> None:
         try:
             snapshot = (
-                await asyncio.to_thread(self.api_client.get_miners)
+                await asyncio.to_thread(self._fetch_data)
                 if self.threaded_requests
-                else self.api_client.get_miners()
+                else self._fetch_data()
             )
         except DashboardAPIError as error:
             self.last_error = str(error)
@@ -127,6 +138,10 @@ class MinerDashboardApp(App):
                 if render:
                     render(snapshot)
         self.update_api_status()
+
+    def _fetch_data(self) -> dict:
+        fetch = getattr(self.api_client, "get_dashboard_data", None)
+        return fetch() if fetch else self.api_client.get_miners()
 
     def update_api_status(self) -> None:
         try:
@@ -149,7 +164,7 @@ class MinerDashboardApp(App):
         self.switch_screen(name)
         render = getattr(self.screen, "render_snapshot", None)
         if render:
-            render(self.snapshot)
+            self.screen.call_after_refresh(render, self.snapshot)
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
