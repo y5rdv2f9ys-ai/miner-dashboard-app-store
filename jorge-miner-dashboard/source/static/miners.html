@@ -47,20 +47,26 @@
                 <label>Miner name
                     <input name="name" type="text" maxlength="48" required>
                 </label>
-                <label>IP address
+                <label class="local-api-field">IP address
                     <input name="ip" type="text" inputmode="decimal" placeholder="192.168.1.115" required>
                 </label>
-                <label>Miner OS
+                <label class="local-api-field">Miner OS
                     <select name="type" required>
                         <option value="axeos">AxeOS</option>
                         <option value="nerdos">NerdOS</option>
                     </select>
                 </label>
-                <label>Pool
-                    <input name="pool" type="text" maxlength="64">
+                <label>Location
+                    <select name="location_scope" required><option value="">Choose location…</option><option value="LOCAL">On-site / Local</option><option value="OFF-SITE">Off-site</option></select>
                 </label>
-                <label>Coin
-                    <input name="coin" type="text" maxlength="16">
+                <label>Telemetry source
+                    <select name="telemetry_source" required><option value="LOCAL_API">Local miner API</option><option value="BRAIINS">Braiins worker</option></select>
+                </label>
+                <label>Pool
+                    <select name="pool" required><option value="">Choose pool…</option><option value="Braiins">Braiins</option><option value="Umbrel Solo">BTC Solo</option><option value="BCH SoloPool">BCH Solo</option></select>
+                </label>
+                <label class="braiins-field" hidden>Braiins worker name
+                    <input name="worker_name" type="text" maxlength="48">
                 </label>
             </div>
             <div class="form-actions">
@@ -68,6 +74,12 @@
                 <button class="save-button" type="submit">Add Miner</button>
             </div>
         </form>
+    </section>
+
+    <section id="braiinsPanel" class="pending-panel" hidden>
+        <h2>Available Braiins Workers</h2>
+        <p>Pool-account workers stay outside fleet totals until you explicitly adopt them.</p>
+        <div id="braiinsList" class="pending-list"></div>
     </section>
 
     <div id="minerList" class="miner-list">

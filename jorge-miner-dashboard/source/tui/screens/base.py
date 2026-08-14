@@ -54,6 +54,8 @@ class MinerTableScreen(Screen):
 
     def row_values(self, miner: dict) -> dict[str, str]:
         offsite = is_offsite(miner)
+        remote_telemetry = miner.get("telemetry_source") == "BRAIINS"
+        unmanaged = miner.get("management") == "UNMANAGED"
         state = (
             "[cyan]● OFF-SITE[/]" if is_online(miner) else "[dim]● REMOTE IDLE[/]"
         ) if offsite else ("[green]● ON[/]" if is_online(miner) else "[red]● OFF[/]")
@@ -61,12 +63,12 @@ class MinerTableScreen(Screen):
             "State": state,
             "Miner": text(miner.get("name")),
             "TH/s": number(miner.get("th"), 2),
-            "ASIC": number(miner.get("temp"), 1, "°"),
-            "VR": number(miner.get("vr_temp"), 1, "°") if miner.get("vr_temp") not in (-1, "-1") else "—",
-            "MHz": integer(miner.get("freq")),
-            "mV": integer(miner.get("volt")),
-            "Reject": number(miner.get("reject"), 2, "%"),
-            "Thermal": "UNMANAGED" if offsite else text(miner.get("status")),
+            "ASIC": "—" if remote_telemetry else number(miner.get("temp"), 1, "°"),
+            "VR": "—" if remote_telemetry else (number(miner.get("vr_temp"), 1, "°") if miner.get("vr_temp") not in (-1, "-1") else "—"),
+            "MHz": "—" if remote_telemetry else integer(miner.get("freq")),
+            "mV": "—" if remote_telemetry else integer(miner.get("volt")),
+            "Reject": "—" if remote_telemetry else number(miner.get("reject"), 2, "%"),
+            "Thermal": "UNMANAGED" if unmanaged else text(miner.get("thermal_status", miner.get("status"))),
             "Pool": text(miner.get("pool")),
         }
 

@@ -66,7 +66,7 @@ BENCHMARK_REPORT_RETENTION_DAYS = 7
 THERMAL_LOCKS_PATH = DATA_DIR / "thermal_locks.json"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
-APP_MANIFEST_PATH = APP_DIR.parent / "umbrel-app.yml"
+APP_VERSION = os.environ.get("APP_VERSION", "1.2.22")
 BTC_BLOCKS_DB = Path(
     os.environ.get("PUBLIC_POOL_DB_PATH", "/public-pool/public-pool.sqlite")
 )
@@ -360,12 +360,13 @@ def reconcile_discovered_miners(discovered):
 
     with CONFIG_LOCK:
         miners = load_miners()
+        local_api_miners = [miner for miner in miners if configured_miner(miner)["telemetry_source"] == "LOCAL_API"]
         by_mac = {
             miner_identity_mac(miner): miner
-            for miner in miners
+            for miner in local_api_miners
             if miner_identity_mac(miner)
         }
-        by_ip = {miner.get("ip"): miner for miner in miners if miner.get("ip")}
+        by_ip = {miner.get("ip"): miner for miner in local_api_miners if miner.get("ip")}
         changed = False
 
         for item in discovered:
@@ -476,6 +477,21 @@ DEFAULT_THERMAL_SETTINGS = {
     },
 }
 
+LOCATION_SCOPES = ("LOCAL", "OFF-SITE")
+TELEMETRY_SOURCES = ("LOCAL_API", "BRAIINS")
+POOL_COINS = {"Braiins": "BTC", "Umbrel Solo": "BTC", "BCH SoloPool": "BCH"}
+
+def configured_miner(miner):
+    """Return a backward-compatible configured identity without mutating disk."""
+    item = dict(miner)
+    item["location_scope"] = str(item.get("location_scope") or "LOCAL").upper()
+    item["telemetry_source"] = str(item.get("telemetry_source") or "LOCAL_API").upper()
+    item["worker_name"] = str(item.get("worker_name") or item.get("name") or "").strip()
+    pool = item.get("pool", "")
+    if pool in POOL_COINS:
+        item["coin"] = POOL_COINS[pool]
+    return item
+
 def validate_miner_identity(data, existing_name=None):
     if not isinstance(data, dict):
         raise ValueError("Miner settings must be a JSON object")
@@ -492,38 +508,42 @@ def validate_miner_identity(data, existing_name=None):
         raise ValueError("Original miner name is required")
     target_name = target_name.strip()
 
-    raw_type = data.get("type")
-    if not isinstance(raw_type, str):
-        raise ValueError("Miner OS is required")
-    miner_type = raw_type.strip().lower()
-    if miner_type not in DEFAULT_THERMAL_SETTINGS:
-        raise ValueError("Miner OS must be AxeOS or NerdOS")
+    telemetry_source = str(data.get("telemetry_source") or "LOCAL_API").strip().upper()
+    raw_location = data.get("location_scope")
+    if telemetry_source == "BRAIINS" and (not isinstance(raw_location, str) or not raw_location.strip()):
+        raise ValueError("Location must be explicitly selected for a Braiins worker")
+    location_scope = str(raw_location or "LOCAL").strip().upper()
+    if location_scope not in LOCATION_SCOPES:
+        raise ValueError("Location must be LOCAL or OFF-SITE")
+    if telemetry_source not in TELEMETRY_SOURCES:
+        raise ValueError("Telemetry source must be LOCAL_API or BRAIINS")
 
-    raw_ip = data.get("ip")
-    if not isinstance(raw_ip, str) or not raw_ip.strip():
-        raise ValueError("IP address is required")
-    ip = raw_ip.strip()
-    try:
-        parsed_ip = ip_address(ip)
-    except ValueError:
-        raise ValueError("IP address is invalid")
-    if parsed_ip.version != 4 or parsed_ip.is_unspecified or parsed_ip.is_multicast:
-        raise ValueError("IP address must be a usable IPv4 address")
+    pool = str(data.get("pool") or "").strip()
+    if pool not in POOL_COINS:
+        raise ValueError("Pool must be Braiins, Umbrel Solo, or BCH SoloPool")
+    coin = POOL_COINS[pool]
 
-    pool = data.get("pool", "")
-    coin = data.get("coin", "")
-    if pool is None:
-        pool = ""
-    if coin is None:
-        coin = ""
-    if not isinstance(pool, str) or not isinstance(coin, str):
-        raise ValueError("Pool and coin must be text")
-    pool = pool.strip()
-    coin = coin.strip().upper()
-    if len(pool) > 64:
-        raise ValueError("Pool must be 64 characters or fewer")
-    if len(coin) > 16:
-        raise ValueError("Coin must be 16 characters or fewer")
+    miner_type = str(data.get("type") or "").strip().lower()
+    ip = str(data.get("ip") or "").strip()
+    worker_name = str(data.get("worker_name") or name).strip()
+    if telemetry_source == "LOCAL_API":
+        if miner_type not in DEFAULT_THERMAL_SETTINGS:
+            raise ValueError("Miner OS must be AxeOS or NerdOS")
+        if not ip:
+            raise ValueError("IP address is required for Local miner API telemetry")
+        try:
+            parsed_ip = ip_address(ip)
+        except ValueError:
+            raise ValueError("IP address is invalid")
+        if parsed_ip.version != 4 or parsed_ip.is_unspecified or parsed_ip.is_multicast:
+            raise ValueError("IP address must be a usable IPv4 address")
+    else:
+        if pool != "Braiins":
+            raise ValueError("Braiins worker telemetry requires the Braiins pool")
+        if not worker_name:
+            raise ValueError("Braiins worker name is required")
+        miner_type = ""
+        ip = ""
 
     identity = data.get("identity")
     clean_identity = {}
@@ -543,12 +563,20 @@ def validate_miner_identity(data, existing_name=None):
         "ip": ip,
         "pool": pool,
         "coin": coin,
+        "location_scope": location_scope,
+        "telemetry_source": telemetry_source,
+        "worker_name": worker_name,
         "identity": clean_identity,
     }
 
 def miner_management_payload():
     with CONFIG_LOCK:
-        miners = load_miners()
+        miners = [configured_miner(miner) for miner in load_miners()]
+    braiins = fetch_braiins_stats()
+    adopted = {miner["worker_name"].casefold() for miner in miners
+               if miner.get("telemetry_source") == "BRAIINS" or miner.get("pool") == "Braiins"}
+    available = [worker for worker in (braiins or {}).get("workers", []) or []
+                 if str(worker.get("name", "")).strip().casefold() not in adopted]
 
     return {
         "pending": load_pending_discovery(),
@@ -561,9 +589,13 @@ def miner_management_payload():
                 "coin": miner.get("coin", ""),
                 "enabled": miner.get("enabled", True),
                 "identity": miner.get("identity", {}),
+                "location_scope": miner["location_scope"],
+                "telemetry_source": miner["telemetry_source"],
+                "worker_name": miner["worker_name"],
             }
             for miner in miners
-        ]
+        ],
+        "available_braiins_workers": available,
     }
 
 def add_miner(data):
@@ -573,10 +605,17 @@ def add_miner(data):
         miners = load_miners()
         if any(miner.get("name") == settings["name"] for miner in miners):
             raise ValueError("Miner name already exists")
-        if any(miner.get("ip") == settings["ip"] for miner in miners):
+        if settings["ip"] and any(miner.get("ip") == settings["ip"] for miner in miners):
             raise ValueError("IP address already exists")
 
-        defaults = DEFAULT_THERMAL_SETTINGS[settings["type"]]
+        worker_key = settings["worker_name"].casefold()
+        if settings["telemetry_source"] == "BRAIINS" and any(
+            configured_miner(miner)["telemetry_source"] == "BRAIINS"
+            and configured_miner(miner)["worker_name"].casefold() == worker_key for miner in miners
+        ):
+            raise ValueError("Braiins worker is already adopted")
+
+        defaults = DEFAULT_THERMAL_SETTINGS.get(settings["type"], {})
         miner = {
             "name": settings["name"],
             "type": settings["type"],
@@ -584,6 +623,9 @@ def add_miner(data):
             "pool": settings["pool"],
             "coin": settings["coin"],
             "enabled": False,
+            "location_scope": settings["location_scope"],
+            "telemetry_source": settings["telemetry_source"],
+            "worker_name": settings["worker_name"],
             **defaults,
         }
         if settings["identity"]:
@@ -608,10 +650,17 @@ def update_miner(data):
         ):
             raise ValueError("Miner name already exists")
         if any(
-            miner is not matches[0] and miner.get("ip") == settings["ip"]
+            settings["ip"] and miner is not matches[0] and miner.get("ip") == settings["ip"]
             for miner in miners
         ):
             raise ValueError("IP address already exists")
+        if settings["telemetry_source"] == "BRAIINS" and any(
+            miner is not matches[0]
+            and configured_miner(miner)["telemetry_source"] == "BRAIINS"
+            and configured_miner(miner)["worker_name"].casefold() == settings["worker_name"].casefold()
+            for miner in miners
+        ):
+            raise ValueError("Braiins worker is already adopted")
 
         miner = matches[0]
         miner["name"] = settings["name"]
@@ -619,6 +668,11 @@ def update_miner(data):
         miner["ip"] = settings["ip"]
         miner["pool"] = settings["pool"]
         miner["coin"] = settings["coin"]
+        miner["location_scope"] = settings["location_scope"]
+        miner["telemetry_source"] = settings["telemetry_source"]
+        miner["worker_name"] = settings["worker_name"]
+        if settings["telemetry_source"] == "BRAIINS":
+            miner["enabled"] = False
         if settings["identity"]:
             miner["identity"] = settings["identity"]
         write_miners(miners)
@@ -717,6 +771,8 @@ def save_thermal_settings(data):
             raise LookupError("Miner was not found or its name is not unique")
 
         miner = matches[0]
+        if configured_miner(miner)["telemetry_source"] != "LOCAL_API":
+            raise ValueError("Thermal management requires Local miner API telemetry")
         miner["enabled"] = settings["enabled"]
         for field in THERMAL_FIELDS:
             miner[field] = settings[field]
@@ -736,6 +792,9 @@ def thermal_settings_payload():
         configured = load_miners()
 
     for miner in configured:
+        miner = configured_miner(miner)
+        if miner["telemetry_source"] != "LOCAL_API":
+            continue
         current = live_by_name.get(miner.get("name"), {})
         base_volt = miner.get("base_volt")
         miners.append({
@@ -765,7 +824,14 @@ def find_configured_miner(name):
     matches = [miner for miner in miners if miner.get("name") == name]
     if len(matches) != 1:
         raise LookupError("Miner was not found or its name is not unique")
-    return matches[0]
+    miner = configured_miner(matches[0])
+    if not benchmark_eligible(miner):
+        raise ValueError("Benchmark requires a supported Local miner API")
+    return miner
+
+def benchmark_eligible(miner):
+    item = configured_miner(miner)
+    return item["telemetry_source"] == "LOCAL_API" and item.get("type") in DEFAULT_THERMAL_SETTINGS
 
 def benchmark_timing_payload(profile):
     timing = profile.get("timing", {})
@@ -2024,8 +2090,26 @@ def sample_benchmark_candidate(
     }
 
 def collect_miners(miners):
-    with ThreadPoolExecutor(max_workers=max(1, len(miners))) as executor:
-        return list(executor.map(read_miner, miners))
+    configured = [configured_miner(miner) for miner in miners]
+    local = [miner for miner in configured if miner["telemetry_source"] == "LOCAL_API"]
+    with ThreadPoolExecutor(max_workers=max(1, len(local))) as executor:
+        local_results = list(executor.map(read_miner, local))
+    by_name = {str(item.get("name", "")).casefold(): item for item in local_results}
+    results = []
+    for miner in configured:
+        if miner["telemetry_source"] == "LOCAL_API":
+            results.append(by_name[miner["name"].casefold()])
+        else:
+            results.append({
+                "name": miner["name"], "pool": miner["pool"], "coin": miner["coin"],
+                "online": False, "thermal_enabled": False, "th": 0,
+                "temp": None, "vr_temp": None, "freq": None, "volt": None, "reject": None,
+                "status": "INACTIVE", "thermal_status": "UNMANAGED",
+                "expected_th": miner.get("expected_th", 1.0),
+                "location_scope": miner["location_scope"],
+                "telemetry_source": "BRAIINS", "worker_name": miner["worker_name"],
+            })
+    return results
 
 def file_recent(path, max_age_seconds=180):
     try:
@@ -2041,13 +2125,13 @@ def file_metadata(path):
         return {"updated_epoch": None, "size_bytes": None}
 
 def application_version():
+    return APP_VERSION
+
+def iso_timestamp(epoch):
     try:
-        for line in APP_MANIFEST_PATH.read_text().splitlines():
-            if line.startswith("version:"):
-                return line.split(":", 1)[1].strip().strip('"\'') or None
-    except OSError:
-        pass
-    return None
+        return datetime.fromtimestamp(float(epoch), TZ).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OSError):
+        return None
 
 def application_diagnostics(snapshot=None):
     snapshot = snapshot or get_dashboard_snapshot() or empty_dashboard_snapshot()
@@ -2055,10 +2139,10 @@ def application_diagnostics(snapshot=None):
     return {
         "version": application_version(),
         "uptime_seconds": max(0, int(time.time() - APP_START_TIME)),
-        "snapshot_updated": snapshot.get("updated"),
+        "snapshot_updated": iso_timestamp(snapshot_epoch),
         "snapshot_age_seconds": max(0, int(time.time() - snapshot_epoch)) if isinstance(snapshot_epoch, (int, float)) else None,
-        "thermal": file_metadata(THERMAL_HEARTBEAT_PATH),
-        "history": file_metadata(HISTORY_PATH),
+        "thermal": {**file_metadata(THERMAL_HEARTBEAT_PATH), "updated": iso_timestamp(file_metadata(THERMAL_HEARTBEAT_PATH)["updated_epoch"])},
+        "history": {**file_metadata(HISTORY_PATH), "updated": iso_timestamp(file_metadata(HISTORY_PATH)["updated_epoch"])},
         "storage": {
             "history_bytes": file_metadata(HISTORY_PATH)["size_bytes"],
             "thermal_log_bytes": file_metadata(LOG_PATH)["size_bytes"],
@@ -2070,48 +2154,66 @@ def application_diagnostics(snapshot=None):
     }
 
 def normalize_fleet(local_miners, braiins):
-    """Add exact-name-matched Braiins workers without duplicating local miners."""
+    """Build canonical configured fleet rows; location never comes from reachability."""
     fleet = []
-    local_names = {}
+    worker_index = {}
+    for worker in (braiins or {}).get("workers", []) or []:
+        key = str(worker.get("name", "")).strip().casefold()
+        if key:
+            worker_index.setdefault(key, []).append(worker)
+
+    mapped_workers = {}
+    requested_workers = {}
+    for miner in local_miners:
+        item = configured_miner(miner)
+        if item["telemetry_source"] == "BRAIINS" or item.get("pool") == "Braiins":
+            requested_workers.setdefault(item["worker_name"].casefold(), []).append(item["name"])
     for miner in local_miners:
         item = dict(miner)
+        source = str(item.get("telemetry_source") or "LOCAL_API").upper()
+        scope = str(item.get("location_scope") or "LOCAL").upper()
         item.update({
-            "location_scope": "LOCAL",
-            "management": "MANAGED" if item.get("thermal_enabled", True) else "UNMANAGED",
+            "location_scope": scope,
+            "telemetry_source": source,
+            "management": "MANAGED" if source == "LOCAL_API" and item.get("thermal_enabled", True) else "UNMANAGED",
         })
-        fleet.append(item)
-        key = str(item.get("name", "")).strip().casefold()
-        if key:
-            local_names.setdefault(key, []).append(item)
-
-    for worker in (braiins or {}).get("workers", []) or []:
-        name = str(worker.get("name", "")).strip()
-        if not name:
-            continue
-        matches = local_names.get(name.casefold(), [])
+        worker_name = str(item.get("worker_name") or item.get("name") or "").strip()
+        item["worker_name"] = worker_name
+        may_match = source == "BRAIINS" or item.get("pool") == "Braiins"
+        matches = worker_index.get(worker_name.casefold(), []) if may_match and len(requested_workers.get(worker_name.casefold(), [])) == 1 else []
         if len(matches) == 1:
-            matches[0]["braiins_worker"] = {
+            worker = matches[0]
+            worker_data = {
                 "state": worker.get("state", "unknown"),
                 "hash_rate_5m_th": worker.get("hash_rate_5m_th"),
                 "hash_rate_60m_th": worker.get("hash_rate_60m_th"),
                 "hash_rate_24h_th": worker.get("hash_rate_24h_th"),
             }
-            continue
-        if matches:
-            # Ambiguous configured names cannot safely be classified or counted.
-            continue
-        hash_5m = float(worker.get("hash_rate_5m_th", 0) or 0)
-        hash_60m = float(worker.get("hash_rate_60m_th", 0) or 0)
-        active = hash_5m > 0 or hash_60m > 0
-        fleet.append({
-            "name": name, "location_scope": "OFF-SITE", "management": "UNMANAGED",
-            "online": active, "status": "OFF-SITE" if active else "OFF-SITE INACTIVE",
-            "status_class": "OFF-SITE" if active else "OFF-SITE-INACTIVE",
-            "th": hash_5m, "hash_rate_5m_th": worker.get("hash_rate_5m_th"),
-            "hash_rate_60m_th": worker.get("hash_rate_60m_th"),
-            "hash_rate_24h_th": worker.get("hash_rate_24h_th"),
-            "worker_state": worker.get("state", "unknown"), "pool": "Braiins", "coin": "BTC",
-        })
+            item["braiins_worker"] = worker_data
+            mapped_workers[worker_name.casefold()] = item.get("name")
+        if source == "BRAIINS":
+            worker = matches[0] if len(matches) == 1 else {}
+            hash_5m = float(worker.get("hash_rate_5m_th", 0) or 0)
+            hash_60m = float(worker.get("hash_rate_60m_th", 0) or 0)
+            remote_active = hash_5m > 0 or hash_60m > 0
+            state = "OFF-SITE" if scope == "OFF-SITE" and remote_active else (
+                "OFF-SITE INACTIVE" if scope == "OFF-SITE" else ("ACTIVE" if remote_active else "INACTIVE")
+            )
+            item.update({
+                "online": remote_active, "status": state,
+                "status_class": state.replace(" ", "-"), "thermal_status": "UNMANAGED",
+                "th": hash_5m, "temp": None, "vr_temp": None, "freq": None,
+                "volt": None, "reject": None,
+                "hash_rate_5m_th": worker.get("hash_rate_5m_th"),
+                "hash_rate_60m_th": worker.get("hash_rate_60m_th"),
+                "hash_rate_24h_th": worker.get("hash_rate_24h_th"),
+                "worker_state": worker.get("state", "unknown"),
+            })
+        elif item["management"] == "UNMANAGED":
+            item["thermal_status"] = "UNMANAGED"
+        else:
+            item["thermal_status"] = item.get("status", "OFFLINE")
+        fleet.append(item)
     return fleet
 
 def fleet_summary(fleet):
@@ -2162,33 +2264,26 @@ def solo_pool_summary(fleet, pool):
         "current_hashrate_th": sum(miner["hashrate_th"] for miner in assigned),
     }
 
-def normalized_braiins_workers(fleet):
+def normalized_braiins_workers(fleet, braiins=None):
     """Build worker rows from normalized fleet identity and match results."""
     workers = []
     for miner in fleet:
-        scope = miner.get("location_scope", "LOCAL")
-        if scope == "LOCAL":
-            worker = miner.get("braiins_worker")
-            if not isinstance(worker, dict):
-                continue
-            row = {"name": miner.get("name", ""), "scope": "LOCAL", **worker}
-        elif scope == "OFF-SITE" and miner.get("pool") == "Braiins":
-            row = {
-                "name": miner.get("name", ""),
-                "scope": "OFF-SITE",
-                "state": miner.get("worker_state", "unknown"),
-                "hash_rate_5m_th": miner.get("hash_rate_5m_th"),
-                "hash_rate_60m_th": miner.get("hash_rate_60m_th"),
-                "hash_rate_24h_th": miner.get("hash_rate_24h_th"),
-            }
-        else:
+        worker = miner.get("braiins_worker")
+        if not isinstance(worker, dict):
             continue
-        workers.append(row)
+        workers.append({"name": miner.get("worker_name") or miner.get("name", ""),
+                        "miner_name": miner.get("name", ""), "scope": miner.get("location_scope", "LOCAL"),
+                        "membership": "FLEET", **worker})
+    claimed = {str(worker.get("name", "")).casefold() for worker in workers}
+    for worker in (braiins or {}).get("workers", []) or []:
+        name = str(worker.get("name", "")).strip()
+        if name and name.casefold() not in claimed:
+            workers.append({"name": name, "scope": "POOL-ONLY", "membership": "UNADOPTED", **worker})
     workers.sort(key=lambda worker: float(worker.get("hash_rate_5m_th", 0) or 0), reverse=True)
     return workers
 
 def recent_thermal_events(limit=100, max_bytes=65536):
-    """Return a bounded tail of the existing thermal log, newest first."""
+    """Return meaningful operational miner state transitions, newest first."""
     limit = max(1, min(int(limit), 200))
     try:
         with LOG_PATH.open("rb") as stream:
@@ -2203,18 +2298,51 @@ def recent_thermal_events(limit=100, max_bytes=65536):
     if size > max_bytes and lines:
         lines = lines[1:]
     events = []
-    for line in reversed(lines):
+    current_time = "—"
+    last_state = {}
+    header_prefix = "==== THERMAL MODE "
+    for line in lines:
         message = line.strip()
         if not message:
             continue
+        if message.startswith(header_prefix):
+            stamp = message[len(header_prefix):].split(" ====", 1)[0].strip()
+            try:
+                current_time = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").strftime("%H:%M")
+            except ValueError:
+                current_time = "—"
+            continue
         upper = message.upper()
-        level = "ERROR" if "ERROR" in upper or "CRITICAL" in upper else (
-            "WARNING" if "WARN" in upper or "COOLING" in upper or "LOWERING" in upper else "INFO"
-        )
-        events.append({"level": level, "message": message})
-        if len(events) >= limit:
-            break
-    return events
+        parts = [part.strip() for part in message.split("|", 1)]
+        if len(parts) != 2:
+            continue
+        miner, raw_event = parts
+        event_upper = raw_event.upper()
+        state = None
+        description = raw_event
+        if "ERROR READING STATS" in event_upper or "MINER UNREACHABLE" in event_upper:
+            state, description = "OFFLINE", "Miner unreachable"
+        elif "CRITICAL ->" in event_upper or "HOLD (CRITICAL)" in event_upper:
+            state, description = "MAX COOLING", (
+                "Maximum thermal reduction active" if "HOLD" in event_upper else "Maximum thermal reduction applied"
+            )
+        elif any(token in event_upper for token in ("HOT ->", "HOLD (HOT)", "HOLD (REDUCED)")):
+            state, description = "COOLING", (
+                "Cooling reduction active" if "HOLD" in event_upper else "Frequency reduced for cooling"
+            )
+        elif "COOL -> RESTORING" in event_upper or "RESTORED" in event_upper or "RECOVERED" in event_upper:
+            state, description = "STABLE", "Returned to normal operating state"
+        elif "BENCHMARK" in event_upper and any(token in event_upper for token in ("START", "RUNNING", "COMPLETE", "RECOVER", "RESTORE", "LOCK")):
+            state, description = "BENCHMARK", raw_event
+        else:
+            # Routine telemetry and generic application log lines are not operational transitions.
+            continue
+        if last_state.get(miner.casefold()) == state:
+            continue
+        last_state[miner.casefold()] = state
+        events.append({"time": current_time, "state": state, "miner": miner,
+                       "message": description, "raw_message": message})
+    return list(reversed(events[-limit:]))
 
 def fetch_braiins_json(path):
     token = BRAIINS_TOKEN_PATH.read_text().strip()
@@ -2339,7 +2467,7 @@ def get_thermal_limit(name):
 
 def dashboard_health(miners):
     """Return the web dashboard's existing weighted health score."""
-    miners = [miner for miner in miners if miner.get("location_scope", "LOCAL") == "LOCAL"]
+    miners = [miner for miner in miners if miner.get("telemetry_source", "LOCAL_API") == "LOCAL_API"]
     total_expected = sum(float(miner.get("expected_th") or 1) for miner in miners) or 1
     health = 100.0
     for miner in miners:
@@ -2371,8 +2499,25 @@ def dashboard_alert_count(miners):
     return sum(
         1 for miner in miners
         if miner.get("location_scope", "LOCAL") == "LOCAL"
+        and miner.get("management", "MANAGED") == "MANAGED"
         and miner.get("status") in ("COOLING", "MAX COOLING", "OFFLINE")
     )
+
+
+def thermal_state_counts(miners):
+    """Count thermal states for locally managed miners only."""
+    counts = {state: 0 for state in ("STABLE", "HOLDING", "COOLING", "MAX COOLING", "BENCHMARK")}
+    for miner in miners:
+        if miner.get("location_scope", "LOCAL") != "LOCAL":
+            continue
+        if miner.get("telemetry_source", "LOCAL_API") != "LOCAL_API":
+            continue
+        if miner.get("management", "MANAGED") != "MANAGED":
+            continue
+        state = miner.get("thermal_status", miner.get("status"))
+        if state in counts:
+            counts[state] += 1
+    return counts
 
 
 def benchmark_status_active(name):
@@ -2393,7 +2538,9 @@ def read_miner(miner):
         hot_freq = miner.get("hot_freq")
         critical_freq = miner.get("critical_freq")
 
-        if benchmark_status_active(miner["name"]):
+        if not miner.get("enabled", True):
+            status = "UNMANAGED"
+        elif benchmark_status_active(miner["name"]):
             status = "BENCHMARK"
         elif th <= 0:
             status = "OFFLINE"
@@ -2408,6 +2555,9 @@ def read_miner(miner):
 
         return {
             "name": miner["name"],
+            "location_scope": miner.get("location_scope", "LOCAL"),
+            "telemetry_source": miner.get("telemetry_source", "LOCAL_API"),
+            "worker_name": miner.get("worker_name", miner["name"]),
             "pool": miner.get("pool", "Unknown"),
             "coin": miner.get("coin", ""),
             "online": True,
@@ -2420,6 +2570,7 @@ def read_miner(miner):
             "reject": reject,
             "status": status,
             "status_class": status.replace(" ", "-"),
+            "thermal_status": status,
             "temp_color": get_temp_color(temp),
             "expected_th": miner.get("expected_th", EXPECTED_TH.get(miner["name"], max(th, 1.0))),
             "thermal_limit": miner.get("critical_temp", get_thermal_limit(miner["name"])),
@@ -2430,6 +2581,9 @@ def read_miner(miner):
     except Exception:
         return {
             "name": miner["name"],
+            "location_scope": miner.get("location_scope", "LOCAL"),
+            "telemetry_source": miner.get("telemetry_source", "LOCAL_API"),
+            "worker_name": miner.get("worker_name", miner["name"]),
             "pool": miner.get("pool", "Unknown"),
             "coin": miner.get("coin", ""),
             "online": False,
@@ -2441,6 +2595,7 @@ def read_miner(miner):
             "th": 0,
             "reject": 0,
             "status": "OFFLINE",
+            "thermal_status": "UNMANAGED" if not miner.get("enabled", True) else "OFFLINE",
             "temp_color": "gray",
             "expected_th": miner.get("expected_th", EXPECTED_TH.get(miner["name"], 1.0)),
             "thermal_limit": miner.get("critical_temp", get_thermal_limit(miner["name"])),
@@ -2546,16 +2701,20 @@ def get_performance(snapshot=None):
                 try:
                     epoch = float(row["epoch"])
                     th = float(row["th"])
-                    temp = float(row["temp"])
-                except:
+                except (TypeError, ValueError):
                     continue
+                try:
+                    temp = float(row["temp"])
+                except (TypeError, ValueError):
+                    temp = None
 
                 age = now - epoch
 
                 for label, seconds in windows.items():
                     if age <= seconds:
                         buckets[name][label]["th"].append(th)
-                        buckets[name][label]["temp"].append(temp)
+                        if temp is not None:
+                            buckets[name][label]["temp"].append(temp)
 
         for name in names:
             for label in windows:
@@ -2573,17 +2732,18 @@ def get_performance(snapshot=None):
     return append_offsite_performance(list(result.values()), snapshot)
 
 def append_offsite_performance(performance, snapshot=None):
-    """Append unmatched remote workers using only Braiins-provided windows."""
+    """Enrich configured Braiins telemetry identities using remote windows."""
     rows = list(performance)
     names = {str(item.get("name", "")) for item in rows}
     snapshot = snapshot or get_dashboard_snapshot() or {}
     for miner in snapshot.get("miners", []) or []:
         name = str(miner.get("name", ""))
-        if miner.get("location_scope") != "OFF-SITE" or not name or name in names:
+        if miner.get("telemetry_source") != "BRAIINS" or not name:
             continue
-        rows.append({
+        remote = {
             "name": name,
-            "location_scope": "OFF-SITE",
+            "location_scope": miner.get("location_scope", "LOCAL"),
+            "telemetry_source": "BRAIINS",
             "th_now": miner.get("hash_rate_5m_th"),
             "th_60m": miner.get("hash_rate_60m_th"),
             "th_12h": None,
@@ -2591,8 +2751,16 @@ def append_offsite_performance(performance, snapshot=None):
             "temp_60m": None,
             "temp_12h": None,
             "temp_24h": None,
-        })
-        names.add(name)
+        }
+        if name in names:
+            for row in rows:
+                if row.get("name") == name:
+                    row.update({key: value for key, value in remote.items() if value is not None})
+                    row["temp_60m"] = row["temp_12h"] = row["temp_24h"] = None
+                    break
+        else:
+            rows.append(remote)
+            names.add(name)
     return rows
 
 
@@ -2721,14 +2889,15 @@ def collect_dashboard_snapshot():
     miners = load_miners()
     results = collect_miners(miners)
 
-    with STATE_LOCK:
-        record_history(results)
-        active_runs = update_pool_runs(results)
-
     solopool = fetch_solopool_stats()
     braiins = fetch_braiins_stats()
-    ALERT_MANAGER.process(results, solopool.get("blocks", []))
     fleet = normalize_fleet(results, braiins)
+
+    with STATE_LOCK:
+        record_history(fleet)
+        active_runs = update_pool_runs(fleet)
+
+    ALERT_MANAGER.process([m for m in fleet if m.get("telemetry_source") == "LOCAL_API"], solopool.get("blocks", []))
     solo_pools = {
         "Umbrel Solo": solo_pool_summary(fleet, "Umbrel Solo"),
         "BCH SoloPool": solo_pool_summary(fleet, "BCH SoloPool"),
@@ -2739,12 +2908,13 @@ def collect_dashboard_snapshot():
         "updated_epoch": time.time(),
         "miners": fleet,
         "fleet_summary": fleet_summary(fleet),
+        "thermal_counts": thermal_state_counts(fleet),
         "solo_pools": solo_pools,
-        "braiins_workers": normalized_braiins_workers(fleet),
-        "health": dashboard_health(results),
-        "alert_count": dashboard_alert_count(results),
+        "braiins_workers": normalized_braiins_workers(fleet, braiins),
+        "health": dashboard_health(fleet),
+        "alert_count": dashboard_alert_count(fleet),
         "runs": active_runs,
-        "odds": build_odds(results, active_runs),
+        "odds": build_odds(fleet, active_runs),
         "braiins": braiins,
         "solopool": solopool,
         "system_status": {
@@ -2773,6 +2943,7 @@ def empty_dashboard_snapshot():
         "updated_epoch": None,
         "miners": [],
         "fleet_summary": fleet_summary([]),
+        "thermal_counts": thermal_state_counts([]),
         "solo_pools": {
             "Umbrel Solo": solo_pool_summary([], "Umbrel Solo"),
             "BCH SoloPool": solo_pool_summary([], "BCH SoloPool"),
@@ -2864,7 +3035,7 @@ def build_page3_payload(snapshot):
         [miner.get("best_diff") for miner in bch_miners] + [solopool.get("best_share")]
     )
 
-    workers = normalized_braiins_workers(miners)
+    workers = normalized_braiins_workers(miners, braiins)
     solo_summaries = snapshot.get("solo_pools", {}) or {}
     btc_summary = solo_summaries.get("Umbrel Solo") or solo_pool_summary(miners, "Umbrel Solo")
     bch_summary = solo_summaries.get("BCH SoloPool") or solo_pool_summary(miners, "BCH SoloPool")

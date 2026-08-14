@@ -33,7 +33,7 @@ class MinerDetailScreen(Screen):
         rows = [
             ("Miner", name),
             ("Connection", state),
-            ("Thermal/status", text(self.miner.get("status"))),
+            ("Thermal/status", text(self.miner.get("thermal_status", self.miner.get("status")))),
             ("Hashrate", number(self.miner.get("th"), 2, " TH/s")),
             ("Expected hashrate", number(self.miner.get("expected_th"), 2, " TH/s")),
             ("ASIC temperature", number(self.miner.get("temp"), 1, "°C")),

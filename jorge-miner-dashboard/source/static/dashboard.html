@@ -30,7 +30,11 @@
     <div class="footer" id="updated">Loading...</div>
     <div class="mobile-summary-line" id="mobileSummary">Active -- | Health -- | Alerts --</div>
     <div class="fleet-breakdown" id="fleetBreakdown">Local -- online · Off-site -- mining</div>
-    <div class="mobile-grid" id="minerGrid"></div>
+    <div class="live-fleet-list" id="minerGrid">
+        <div class="live-fleet-head" aria-hidden="true">
+            <span>State</span><span>Miner</span><span>TH/s</span><span>ASIC</span><span>VR</span><span>MHz</span><span>Thermal</span>
+        </div>
+    </div>
     <div class="legend">
         <div class="legend-item"><div class="dot green"></div><div>STABLE</div></div>
         <div class="legend-item"><div class="dot yellow"></div><div>HOLDING</div></div>

@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+target_dir=${HOME}/.local/bin
+target=${target_dir}/miners
+
+mkdir -p "$target_dir"
+install -m 0755 "$script_dir/miners-host" "$target"
+
+echo "Installed miners command at $target"
+case ":${PATH}:" in
+    *":${target_dir}:"*) ;;
+    *) echo "Add $target_dir to PATH, then run: miners" ;;
+esac

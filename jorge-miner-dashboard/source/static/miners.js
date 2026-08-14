@@ -4,6 +4,8 @@ const addForm = document.getElementById('addMinerForm');
 const scanButton = document.getElementById('scanButton');
 const pendingPanel = document.getElementById('pendingPanel');
 const pendingList = document.getElementById('pendingList');
+const braiinsPanel = document.getElementById('braiinsPanel');
+const braiinsList = document.getElementById('braiinsList');
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -38,6 +40,51 @@ function osSelect(value) {
         </label>`;
 }
 
+function selected(value, expected) { return value === expected ? 'selected' : ''; }
+
+function capabilityFields(miner = {}) {
+    const source = miner.telemetry_source || 'LOCAL_API';
+    const scope = miner.location_scope || 'LOCAL';
+    return `
+        <label>Location<select name="location_scope" required>
+            <option value="LOCAL" ${selected(scope, 'LOCAL')}>On-site / Local</option>
+            <option value="OFF-SITE" ${selected(scope, 'OFF-SITE')}>Off-site</option>
+        </select></label>
+        <label>Telemetry source<select name="telemetry_source" required>
+            <option value="LOCAL_API" ${selected(source, 'LOCAL_API')}>Local miner API</option>
+            <option value="BRAIINS" ${selected(source, 'BRAIINS')}>Braiins worker</option>
+        </select></label>
+        <label>Pool<select name="pool" required>
+            <option value="" ${selected(miner.pool || '', '')}>Choose pool…</option>
+            <option value="Braiins" ${selected(miner.pool, 'Braiins')}>Braiins</option>
+            <option value="Umbrel Solo" ${selected(miner.pool, 'Umbrel Solo')}>BTC Solo</option>
+            <option value="BCH SoloPool" ${selected(miner.pool, 'BCH SoloPool')}>BCH Solo</option>
+        </select></label>
+        <label class="braiins-field" ${source === 'BRAIINS' ? '' : 'hidden'}>Braiins worker name
+            <input name="worker_name" type="text" maxlength="48" value="${escapeHtml(miner.worker_name || miner.name || '')}">
+        </label>`;
+}
+
+function updateCapabilities(form) {
+    const remote = form.elements.telemetry_source.value === 'BRAIINS';
+    form.querySelectorAll('.local-api-field').forEach(field => field.hidden = remote);
+    form.querySelectorAll('.braiins-field').forEach(field => field.hidden = !remote);
+    form.elements.ip.required = !remote;
+    form.elements.type.required = !remote;
+    form.elements.worker_name.required = remote;
+    if (remote && !form.elements.worker_name.value) form.elements.worker_name.value = form.elements.name.value;
+}
+
+function bindCapabilities(form) {
+    form.elements.telemetry_source.addEventListener('change', () => updateCapabilities(form));
+    form.elements.name.addEventListener('input', () => {
+        if (form.elements.telemetry_source.value === 'BRAIINS' && !form.elements.worker_name.dataset.edited)
+            form.elements.worker_name.value = form.elements.name.value;
+    });
+    form.elements.worker_name.addEventListener('input', () => form.elements.worker_name.dataset.edited = 'true');
+    updateCapabilities(form);
+}
+
 function formPayload(form) {
     const data = Object.fromEntries(new FormData(form).entries());
     let identity = {};
@@ -54,8 +101,10 @@ function formPayload(form) {
         name: data.name,
         ip: data.ip,
         type: data.type,
-        pool: data.pool || '',
-        coin: data.coin || '',
+        pool: data.pool,
+        location_scope: data.location_scope,
+        telemetry_source: data.telemetry_source,
+        worker_name: data.worker_name || data.name,
     };
     if (Object.keys(identity).length) payload.identity = identity;
     return payload;
@@ -71,13 +120,16 @@ function identitySummary(identity = {}) {
 }
 
 function renderMiner(miner) {
+    const sourceLabel = miner.telemetry_source === 'BRAIINS' ? 'BRAIINS TELEMETRY' : (miner.type || 'unknown').toUpperCase();
+    const locationLabel = miner.location_scope === 'OFF-SITE' ? 'OFF-SITE' : 'LOCAL';
+    const endpointLabel = miner.telemetry_source === 'BRAIINS' ? (miner.worker_name || miner.name) : miner.ip;
     const card = document.createElement('article');
     card.className = 'miner-card';
     card.innerHTML = `
         <button class="miner-summary" type="button" aria-expanded="false">
             <div>
                 <h2>${escapeHtml(miner.name)}</h2>
-                <div class="miner-meta">${escapeHtml((miner.type || 'unknown').toUpperCase())} · ${escapeHtml(miner.ip)}</div>
+                <div class="miner-meta">${escapeHtml(locationLabel)} · ${escapeHtml(sourceLabel)} · ${escapeHtml(endpointLabel)}</div>
             </div>
             <div class="thermal-state">Thermal ${miner.enabled ? 'enabled' : 'disabled'}</div>
         </button>
@@ -86,10 +138,9 @@ function renderMiner(miner) {
             <input type="hidden" name="identity_json" value="${escapeHtml(JSON.stringify(miner.identity || {}))}">
             <div class="settings-grid">
                 ${textInput('name', 'Miner name', miner.name, 'maxlength="48" required')}
-                ${textInput('ip', 'IP address', miner.ip, 'inputmode="decimal" required')}
-                ${osSelect(miner.type)}
-                ${textInput('pool', 'Pool', miner.pool, 'maxlength="64"')}
-                ${textInput('coin', 'Coin', miner.coin, 'maxlength="16"')}
+                <div class="local-api-field">${textInput('ip', 'IP address', miner.ip, 'inputmode="decimal"')}</div>
+                <div class="local-api-field">${osSelect(miner.type || 'axeos')}</div>
+                ${capabilityFields(miner)}
             </div>
             <div class="form-actions">
                 <span class="save-note">${escapeHtml(identitySummary(miner.identity))}</span>
@@ -105,6 +156,7 @@ function renderMiner(miner) {
     });
 
     card.querySelector('form').addEventListener('submit', saveMiner);
+    bindCapabilities(card.querySelector('form'));
     card.querySelector('.delete-button').addEventListener('click', () => deleteMiner(miner.name));
     return card;
 }
@@ -114,9 +166,27 @@ function fillAddForm(miner) {
     addForm.elements.ip.value = miner.ip || '';
     addForm.elements.type.value = miner.type || 'axeos';
     addForm.elements.pool.value = miner.pool || '';
-    addForm.elements.coin.value = miner.coin || '';
+    addForm.elements.location_scope.value = miner.location_scope ?? 'LOCAL';
+    addForm.elements.telemetry_source.value = miner.telemetry_source || 'LOCAL_API';
+    addForm.elements.worker_name.value = miner.worker_name || miner.name || '';
     addForm.elements.identity_json.value = JSON.stringify(miner.identity || {});
+    updateCapabilities(addForm);
     addForm.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function renderBraiinsWorkers(workers) {
+    braiinsList.innerHTML = '';
+    workers.forEach(worker => {
+        const item = document.createElement('article');
+        item.className = 'pending-card';
+        item.innerHTML = `<div><h3>${escapeHtml(worker.name)}</h3><p>UNADOPTED / POOL-ONLY · ${escapeHtml(worker.state || 'unknown')}</p></div><button type="button">Adopt</button>`;
+        item.querySelector('button').addEventListener('click', () => fillAddForm({
+            name: worker.name, worker_name: worker.name, telemetry_source: 'BRAIINS',
+            location_scope: '', pool: 'Braiins', ip: '', type: 'axeos'
+        }));
+        braiinsList.appendChild(item);
+    });
+    braiinsPanel.hidden = !workers.length;
 }
 
 function renderPendingMiner(miner) {
@@ -237,6 +307,7 @@ async function loadMiners() {
         if (!response.ok) throw new Error(data.error || `Load failed (${response.status})`);
         list.innerHTML = '';
         renderPending(data.pending || []);
+        renderBraiinsWorkers(data.available_braiins_workers || []);
         data.miners.forEach(miner => list.appendChild(renderMiner(miner)));
         if (!data.miners.length) list.innerHTML = '<div class="loading">No configured miners found.</div>';
     } catch (error) {
@@ -246,5 +317,6 @@ async function loadMiners() {
 }
 
 addForm.addEventListener('submit', addMiner);
+bindCapabilities(addForm);
 scanButton.addEventListener('click', scanMiners);
 loadMiners();

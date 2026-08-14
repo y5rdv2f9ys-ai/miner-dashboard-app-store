@@ -12,6 +12,10 @@ import miner_thermal_mode  # noqa: E402
 
 
 class MinerThermalModeTests(unittest.TestCase):
+    def test_braiins_telemetry_is_never_thermal_managed(self):
+        self.assertFalse(miner_thermal_mode.thermal_eligible({"enabled": True, "telemetry_source": "BRAIINS"}))
+        self.assertFalse(miner_thermal_mode.thermal_eligible({"enabled": False, "telemetry_source": "LOCAL_API"}))
+        self.assertTrue(miner_thermal_mode.thermal_eligible({"enabled": True, "telemetry_source": "LOCAL_API"}))
     def test_state_profile_defaults_state_voltage_to_base_voltage(self):
         miner = {
             "base_freq": 700,

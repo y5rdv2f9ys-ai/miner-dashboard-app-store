@@ -1,5 +1,8 @@
 import json
 import io
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -81,9 +84,10 @@ SNAPSHOT = {
                     ]},
     },
     "events_data": {"events": [
-        {"level": "ERROR", "message": "BitaxeOffline | ERROR reading stats: timeout"},
-        {"level": "WARNING", "message": "Bitaxe001 | HOT -> lowering"},
-        {"level": "INFO", "message": "Bitaxe001 | Temp 61.5°C | Freq 550"},
+        {"time": "11:58", "state": "OFFLINE", "miner": "BitaxeOffline",
+         "message": "Miner unreachable", "raw_message": "BitaxeOffline | ERROR reading stats: timeout"},
+        {"time": "11:55", "state": "COOLING", "miner": "Bitaxe001",
+         "message": "Frequency reduced for cooling", "raw_message": "Bitaxe001 | HOT -> reducing"},
     ]},
     "diagnostics_data": {
         "version": "1.2.19", "uptime_seconds": 223200,
@@ -166,6 +170,19 @@ class APIClientTests(unittest.TestCase):
 
 
 class BackendSummaryTests(unittest.TestCase):
+    def test_read_miner_never_classifies_disabled_control_by_frequency(self):
+        configured = {"name": "Bitaxe403", "enabled": False, "base_freq": 550,
+                      "hot_freq": 525, "critical_freq": 500}
+        telemetry = {"temp": 69.2, "vr_temp": 64.8, "freq": 490, "volt": 1120,
+                     "th": .82, "reject": .31, "bestSessionDiff": 0, "bestDiff": 0}
+        with patch.object(app_v2, "normalized_stats", return_value=telemetry), \
+             patch.object(app_v2, "benchmark_status_active", return_value=True):
+            result = app_v2.read_miner(configured)
+        self.assertEqual(result["status"], "UNMANAGED")
+        self.assertEqual(result["thermal_status"], "UNMANAGED")
+        self.assertEqual(result["temp"], 69.2)
+        self.assertEqual(result["freq"], 490)
+
     def test_braiins_workers_are_exactly_matched_and_deduplicated(self):
         local = [{"name": "Bitaxe001", "online": True, "th": 1.1, "pool": "Braiins",
                   "thermal_enabled": True}]
@@ -175,21 +192,103 @@ class BackendSummaryTests(unittest.TestCase):
             {"name": "Remote-Idle", "state": "off", "hash_rate_5m_th": 0, "hash_rate_60m_th": 0},
         ]}
         fleet = app_v2.normalize_fleet(local, braiins)
-        self.assertEqual([item["name"] for item in fleet], ["Bitaxe001", "Remote-S21", "Remote-Idle"])
+        self.assertEqual([item["name"] for item in fleet], ["Bitaxe001"])
         self.assertEqual(fleet[0]["location_scope"], "LOCAL")
-        self.assertEqual(fleet[1]["management"], "UNMANAGED")
-        self.assertEqual(fleet[1]["status"], "OFF-SITE")
-        self.assertEqual(fleet[2]["status"], "OFF-SITE INACTIVE")
-        self.assertAlmostEqual(sum(float(item.get("th") or 0) for item in fleet), 7.3)
+        self.assertAlmostEqual(sum(float(item.get("th") or 0) for item in fleet), 1.1)
+        workers = app_v2.normalized_braiins_workers(fleet, braiins)
+        self.assertEqual([item["scope"] for item in workers], ["POOL-ONLY", "LOCAL", "POOL-ONLY"])
 
     def test_local_management_follows_thermal_state_without_changing_scope(self):
         fleet = app_v2.normalize_fleet([
-            {"name": "Managed", "thermal_enabled": True},
-            {"name": "Bitaxe403", "thermal_enabled": False},
+            {"name": "Managed", "online": True, "status": "STABLE", "thermal_enabled": True},
+            {"name": "Bitaxe403", "online": True, "status": "MAX COOLING", "temp": 69,
+             "freq": 490, "th": .82, "thermal_enabled": False},
         ], {})
         self.assertEqual(fleet[0]["management"], "MANAGED")
+        self.assertEqual(fleet[0]["thermal_status"], "STABLE")
         self.assertEqual(fleet[1]["management"], "UNMANAGED")
         self.assertEqual(fleet[1]["location_scope"], "LOCAL")
+        self.assertEqual(fleet[1]["status"], "MAX COOLING")
+        self.assertEqual(fleet[1]["thermal_status"], "UNMANAGED")
+        self.assertEqual(fleet[1]["temp"], 69)
+        self.assertEqual(fleet[1]["freq"], 490)
+
+    def test_unreachable_local_api_miner_does_not_change_location(self):
+        fleet = app_v2.normalize_fleet([
+            {"name": "Bitaxe001", "online": False, "status": "OFFLINE", "th": 0,
+             "temp": 0, "vr_temp": -1, "freq": 0, "volt": 0, "reject": 0,
+             "pool": "Umbrel Solo", "thermal_enabled": True},
+        ], {"workers": [{"name": "bitAXE001", "state": "ok", "hash_rate_5m_th": 1.23,
+                          "hash_rate_60m_th": 1.2, "hash_rate_24h_th": 1.1}]})
+        self.assertEqual(len(fleet), 1)
+        miner = fleet[0]
+        self.assertEqual(miner["name"], "Bitaxe001")
+        self.assertEqual(miner["location_scope"], "LOCAL")
+        self.assertEqual(miner["management"], "MANAGED")
+        self.assertEqual(miner["status"], "OFFLINE")
+        self.assertEqual(miner["pool"], "Umbrel Solo")
+        self.assertNotIn("braiins_worker", miner)
+
+    def test_matching_miner_returns_local_when_endpoint_is_reachable(self):
+        local = {"name": "Bitaxe001", "online": True, "status": "COOLING", "th": 1.04,
+                 "temp": 68.2, "vr_temp": 63.1, "freq": 525, "thermal_enabled": True,
+                 "pool": "Braiins"}
+        worker = {"name": "BITAXE001", "state": "ok", "hash_rate_5m_th": 1.3,
+                  "hash_rate_60m_th": 1.2}
+        fleet = app_v2.normalize_fleet([local], {"workers": [worker]})
+        self.assertEqual(len(fleet), 1)
+        miner = fleet[0]
+        self.assertEqual(miner["location_scope"], "LOCAL")
+        self.assertEqual(miner["management"], "MANAGED")
+        self.assertEqual(miner["thermal_status"], "COOLING")
+        self.assertEqual(miner["th"], 1.04)
+        self.assertEqual(miner["temp"], 68.2)
+        self.assertIn("braiins_worker", miner)
+
+    def test_inactive_unmatched_worker_is_not_a_fleet_row(self):
+        fleet = app_v2.normalize_fleet([], {"workers": [
+            {"name": "AvalonQ", "state": "off", "hash_rate_5m_th": 0, "hash_rate_60m_th": 0}
+        ]})
+        self.assertEqual(fleet, [])
+
+    def test_configured_offsite_braiins_without_hashrate_is_inactive(self):
+        fleet = app_v2.normalize_fleet([
+            {"name": "Configured", "online": False, "status": "OFFLINE", "th": 0,
+             "thermal_enabled": False, "pool": "Braiins", "telemetry_source": "BRAIINS",
+             "location_scope": "OFF-SITE", "worker_name": "Configured"}
+        ], {"workers": [{"name": "configured", "state": "off", "hash_rate_5m_th": 0,
+                          "hash_rate_60m_th": 0}]})
+        self.assertEqual(len(fleet), 1)
+        self.assertEqual(fleet[0]["location_scope"], "OFF-SITE")
+        self.assertEqual(fleet[0]["status"], "OFF-SITE INACTIVE")
+        self.assertEqual(fleet[0]["status_class"], "OFF-SITE-INACTIVE")
+        self.assertEqual(fleet[0]["management"], "UNMANAGED")
+        self.assertEqual(fleet[0]["thermal_status"], "UNMANAGED")
+        self.assertFalse(fleet[0]["online"])
+        self.assertEqual(fleet[0]["th"], 0)
+        for field in ("temp", "vr_temp", "freq", "volt", "reject"):
+            self.assertIsNone(fleet[0][field])
+
+    def test_unreachable_miner_without_exact_worker_match_does_not_transition(self):
+        fleet = app_v2.normalize_fleet([
+            {"name": "Bitaxe001", "online": False, "status": "OFFLINE", "th": 0,
+             "thermal_enabled": True}
+        ], {"workers": [{"name": "Bitaxe01", "state": "ok", "hash_rate_5m_th": 1.2,
+                          "hash_rate_60m_th": 1.1}]})
+        configured = next(item for item in fleet if item["name"] == "Bitaxe001")
+        self.assertEqual(configured["location_scope"], "LOCAL")
+        self.assertEqual(configured["status"], "OFFLINE")
+        self.assertEqual(len(fleet), 1)
+
+    def test_ambiguous_configured_names_do_not_transition_or_duplicate_worker(self):
+        fleet = app_v2.normalize_fleet([
+            {"name": "Duplicate", "online": False, "status": "OFFLINE", "th": 0},
+            {"name": "duplicate", "online": False, "status": "OFFLINE", "th": 0},
+        ], {"workers": [{"name": "DUPLICATE", "state": "ok", "hash_rate_5m_th": 1.2,
+                          "hash_rate_60m_th": 1.1}]})
+        self.assertEqual(len(fleet), 2)
+        self.assertTrue(all(item["location_scope"] == "LOCAL" for item in fleet))
+        self.assertTrue(all("braiins_worker" not in item for item in fleet))
 
     def test_fleet_summary_uses_hashing_activity_not_reachability(self):
         fleet = [
@@ -227,17 +326,30 @@ class BackendSummaryTests(unittest.TestCase):
         local = {"online": True, "th": 1, "expected_th": 1, "temp": 60,
                  "thermal_limit": 70, "reject": 0, "status": "STABLE", "location_scope": "LOCAL"}
         remote = {"online": False, "th": 0, "status": "OFF-SITE INACTIVE",
-                  "location_scope": "OFF-SITE", "management": "UNMANAGED"}
+                  "location_scope": "OFF-SITE", "telemetry_source": "BRAIINS", "management": "UNMANAGED"}
         self.assertEqual(app_v2.dashboard_health([local, remote]), 100)
         self.assertEqual(app_v2.dashboard_alert_count([local, remote]), 0)
+
+    def test_thermal_counts_exclude_unmanaged_and_offsite(self):
+        miners = [
+            {"location_scope": "LOCAL", "management": "MANAGED", "thermal_status": "STABLE"},
+            {"location_scope": "LOCAL", "management": "MANAGED", "thermal_status": "BENCHMARK"},
+            {"location_scope": "LOCAL", "management": "UNMANAGED", "thermal_status": "MAX COOLING"},
+            {"location_scope": "OFF-SITE", "management": "UNMANAGED", "thermal_status": "COOLING"},
+        ]
+        self.assertEqual(app_v2.thermal_state_counts(miners), {
+            "STABLE": 1, "HOLDING": 0, "COOLING": 0, "MAX COOLING": 0, "BENCHMARK": 1,
+        })
 
     def test_pool_payload_marks_local_and_offsite_workers_without_double_count(self):
         snapshot = {
             "miners": [
                 {"name": "Bitaxe001", "pool": "Braiins", "th": 1.1, "online": True, "location_scope": "LOCAL",
+                 "telemetry_source": "LOCAL_API", "worker_name": "Bitaxe001",
                  "braiins_worker": {"state": "ok", "hash_rate_5m_th": 1.2, "hash_rate_60m_th": 1.1}},
                 {"name": "Remote-S21", "pool": "Braiins", "th": 6.2, "online": True, "location_scope": "OFF-SITE",
-                 "worker_state": "ok", "hash_rate_5m_th": 6.2, "hash_rate_60m_th": 6.0},
+                 "telemetry_source": "BRAIINS", "worker_name": "Remote-S21",
+                 "braiins_worker": {"state": "ok", "hash_rate_5m_th": 6.2, "hash_rate_60m_th": 6.0}},
             ],
             "braiins": {"workers": [
                 {"name": "Bitaxe001", "state": "ok", "hash_rate_5m_th": 1.2, "hash_rate_60m_th": 1.1},
@@ -252,7 +364,7 @@ class BackendSummaryTests(unittest.TestCase):
         snapshot = {"miners": [
             {"name": "Local", "location_scope": "LOCAL", "braiins_worker": {"hash_rate_60m_th": 1.0}},
             {"name": "Remote", "location_scope": "OFF-SITE", "hash_rate_5m_th": 6.2,
-             "hash_rate_60m_th": 6.0, "hash_rate_24h_th": 5.8},
+             "telemetry_source": "BRAIINS", "hash_rate_60m_th": 6.0, "hash_rate_24h_th": 5.8},
         ]}
         rows = app_v2.append_offsite_performance([
             {"name": "Local", "th_60m": 1.0, "th_12h": 1.0, "th_24h": 1.0}
@@ -341,15 +453,67 @@ class BackendSummaryTests(unittest.TestCase):
         self.assertIn("com.docker.compose.project=jorge-miner-dashboard", launcher)
         self.assertIn("com.docker.compose.service=dashboard", launcher)
         self.assertNotIn("jorge-miner-dashboard_dashboard_1", launcher)
+        installer = Path(__file__).with_name("install-miners-command").read_text()
+        self.assertIn(".local/bin", installer)
+        self.assertIn("miners-host", installer)
+
+    def test_host_launcher_discovers_container_and_reports_missing_service(self):
+        launcher = Path(__file__).with_name("miners-host")
+        with tempfile.TemporaryDirectory() as temp:
+            docker = Path(temp) / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = ps ]; then\n"
+                "  case \" $* \" in *\" --format \"*) echo abc123;; esac\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo \"$*\"\n"
+            )
+            docker.chmod(0o755)
+            env = {**os.environ, "PATH": f"{temp}:{os.environ['PATH']}"}
+            result = subprocess.run([launcher, "--url", "http://dashboard"], env=env,
+                                    text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("exec -i abc123 miners-tui --url http://dashboard", result.stdout)
+            docker.write_text("#!/bin/sh\nexit 0\n")
+            docker.chmod(0o755)
+            result = subprocess.run([launcher], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("container is not running", result.stderr)
+
+    def test_host_launcher_installer_targets_user_local_bin(self):
+        installer = Path(__file__).with_name("install-miners-command")
+        with tempfile.TemporaryDirectory() as temp:
+            env = {**os.environ, "HOME": temp, "PATH": "/usr/bin:/bin"}
+            result = subprocess.run([installer], env=env, text=True, capture_output=True, check=False)
+            target = Path(temp) / ".local/bin/miners"
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(target.is_file())
+            self.assertTrue(os.access(target, os.X_OK))
+            self.assertIn("Installed miners command", result.stdout)
 
     def test_recent_events_are_bounded_newest_first(self):
-        content = b"one\nwarning cooling\nERROR newest\n"
+        content = b"""==== THERMAL MODE 2026-08-14 20:00:00 ====
+Bitaxe001 | Temp 61.5C | Freq 550
+Bitaxe001 | HOT -> reducing
+==== THERMAL MODE 2026-08-14 20:01:00 ====
+Bitaxe001 | HOLD (hot)
+Bitaxe001 | CRITICAL -> lowering
+==== THERMAL MODE 2026-08-14 20:02:00 ====
+Bitaxe001 | COOL -> restoring
+Bitaxe002 | ERROR reading stats: timeout
+AvalonQ | worker inactive
+NQaxe | SKIP thermal lock (benchmark:bench_001)
+"""
         with patch.object(app_v2, "LOG_PATH") as path:
             path.open.return_value.__enter__.return_value = io.BytesIO(content)
-            events = app_v2.recent_thermal_events(2)
-        self.assertEqual(len(events), 2)
-        self.assertEqual(events[0]["level"], "ERROR")
-        self.assertEqual(events[1]["level"], "WARNING")
+            events = app_v2.recent_thermal_events(20)
+        self.assertEqual([event["state"] for event in events],
+                         ["BENCHMARK", "OFFLINE", "STABLE", "MAX COOLING", "COOLING"])
+        self.assertEqual(events[0]["time"], "20:02")
+        self.assertEqual(sum(event["state"] == "COOLING" for event in events), 1)
+        self.assertFalse(any(event["miner"] == "AvalonQ" for event in events))
+        self.assertFalse(any("Temp 61.5" in event["raw_message"] for event in events))
 
     def test_events_endpoint_caps_limit(self):
         handler = app_v2.Handler.__new__(app_v2.Handler)
@@ -429,6 +593,7 @@ class TUITests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press(key)
                 await pilot.pause()
                 self.assertIsInstance(app.screen, screen_type)
+                self.assertIn("CONNECTED", str(app.screen.query_one("#api-status", Static).render()))
             await pilot.press("escape")
             self.assertIsInstance(app.screen, OverviewScreen)
             await pilot.press("?")
@@ -500,6 +665,42 @@ class TUITests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertTrue(app.screen.is_mounted)
 
+    async def test_local_braiins_telemetry_keeps_local_scope_without_fake_metrics(self):
+        snapshot = dict(SNAPSHOT)
+        snapshot["miners"] = [{"name": "AvalonQ", "location_scope": "LOCAL",
+                               "telemetry_source": "BRAIINS", "management": "UNMANAGED",
+                               "pool": "Braiins", "online": True, "th": 3.2,
+                               "temp": None, "vr_temp": None, "freq": None, "volt": None, "reject": None}]
+        app = MinerDashboardApp(FakeClient(snapshot), enable_periodic_refresh=False, threaded_requests=False)
+        async with app.run_test(size=(120, 35)) as pilot:
+            await pilot.press("2")
+            row = [str(cell) for cell in app.screen.query_one(DataTable).get_row("AvalonQ")]
+            self.assertFalse(any("OFF-SITE" in cell for cell in row))
+            self.assertIn("UNMANAGED", row)
+            self.assertGreaterEqual(row.count("—"), 5)
+
+    async def test_events_use_operational_states_and_detail(self):
+        snapshot = dict(SNAPSHOT)
+        snapshot["events_data"] = {"events": [
+            {"time": "21:42", "state": "MAX COOLING", "miner": "Bitaxe001", "message": "Maximum reduction", "raw_message": "Bitaxe001 | CRITICAL -> lowering"},
+            {"time": "20:17", "state": "OFFLINE", "miner": "Bitaxe002", "message": "Miner unreachable", "raw_message": "Bitaxe002 | ERROR reading stats: timeout"},
+        ]}
+        app = MinerDashboardApp(FakeClient(snapshot), enable_periodic_refresh=False, threaded_requests=False)
+        async with app.run_test(size=(90, 30)) as pilot:
+            await pilot.press("6")
+            table = app.screen.query_one("#events-table", DataTable)
+            self.assertEqual({str(column.label) for column in table.columns.values()}, {"Time", "State", "Miner", "Event"})
+            self.assertIn("MAX COOLING", " ".join(str(cell) for cell in table.get_row_at(0)))
+            table.move_cursor(row=1)
+            await pilot.pause()
+            self.assertIn("ERROR reading stats", str(app.screen.query_one("#event-detail", Static).render()))
+
+    def test_diagnostics_version_and_timezone_aware_timestamps(self):
+        diagnostics = app_v2.application_diagnostics({"updated_epoch": 1786459200, "updated": "ignored"})
+        self.assertEqual(diagnostics["version"], "1.2.22")
+        self.assertRegex(diagnostics["snapshot_updated"], r"-06:00$")
+        self.assertIn("T", diagnostics["snapshot_updated"])
+
     async def test_remote_performance_is_available_and_thermal_remains_local(self):
         app = MinerDashboardApp(FakeClient(), enable_periodic_refresh=False, threaded_requests=False)
         async with app.run_test(size=(120, 35)) as pilot:
@@ -520,6 +721,24 @@ class TUITests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any("OFF-SITE" in cell for cell in row))
             self.assertIn("UNMANAGED", row)
             self.assertGreaterEqual(row.count("—"), 5)
+
+    async def test_local_unmanaged_keeps_telemetry_and_shows_unmanaged_thermal(self):
+        snapshot = dict(SNAPSHOT)
+        snapshot["miners"] = [{
+            "name": "Bitaxe403", "online": True, "th": .82, "temp": 69.2,
+            "vr_temp": 64.8, "freq": 490, "volt": 1120, "reject": .31,
+            "status": "MAX COOLING", "thermal_status": "UNMANAGED",
+            "location_scope": "LOCAL", "management": "UNMANAGED",
+        }]
+        app = MinerDashboardApp(FakeClient(snapshot), enable_periodic_refresh=False, threaded_requests=False)
+        async with app.run_test(size=(120, 35)) as pilot:
+            await pilot.press("2")
+            table = app.screen.query_one(DataTable)
+            row = [str(cell) for cell in table.get_row("Bitaxe403")]
+            self.assertIn("UNMANAGED", row)
+            self.assertTrue(any("69.2" in cell for cell in row))
+            self.assertTrue(any("490" in cell for cell in row))
+            self.assertFalse(any("MAX COOLING" in cell for cell in row))
 
     async def test_narrow_operational_tables_hide_lower_priority_columns(self):
         app = MinerDashboardApp(FakeClient(), enable_periodic_refresh=False, threaded_requests=False)

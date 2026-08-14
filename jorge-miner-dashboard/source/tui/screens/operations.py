@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import time
+from datetime import datetime
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -82,12 +82,13 @@ class PerformanceScreen(SnapshotScreen):
         for item in perf:
             name = str(item.get("name", ""))
             now = live.get(name, {})
+            remote_telemetry = now.get("telemetry_source") == "BRAIINS"
             values = {
                 "Miner": text(name), "Now TH/s": number(now.get("th"), 2),
                 "60m": number(item.get("th_60m"), 2), "12h": number(item.get("th_12h"), 2),
                 "24h": number(item.get("th_24h"), 2),
-                "ASIC/VR": f"{number(now.get('temp'), 1)}/{number(now.get('vr_temp'), 1) if now.get('vr_temp') not in (-1, '-1') else '—'}°",
-                "MHz": integer(now.get("freq")),
+                "ASIC/VR": "—/—" if remote_telemetry else f"{number(now.get('temp'), 1)}/{number(now.get('vr_temp'), 1) if now.get('vr_temp') not in (-1, '-1') else '—'}°",
+                "MHz": "—" if remote_telemetry else integer(now.get("freq")),
             }
             table.add_row(*(values[column] for column in columns))
         online = [item for item in miners if item.get("online") is True]
@@ -200,8 +201,9 @@ class EventsScreen(SnapshotScreen):
     ]
 
     def compose(self) -> ComposeResult:
-        yield from self.chrome("EVENTS", "Bounded recent thermal events · newest first")
+        yield from self.chrome("EVENTS", "Operational miner state transitions · newest first")
         yield DataTable(id="events-table")
+        yield Static("Select an event to view its complete message.", id="event-detail", classes="section")
         yield Static(NAV + "  ↑/↓ or j/k Scroll", classes="nav-line")
         yield Static("API: connecting…", id="api-status")
 
@@ -209,15 +211,23 @@ class EventsScreen(SnapshotScreen):
         events = rows(nested(snapshot, "events_data").get("events", []))
         table = self.query_one("#events-table", DataTable)
         table.clear(columns=True)
-        table.add_columns("Level", "Recent event (newest first)")
+        table.add_columns("Time", "State", "Miner", "Event")
         table.zebra_stripes = True
         table.cursor_type = "row"
         for event in events:
-            level = str(event.get("level", "INFO")).upper()
-            styled = f"[red]{level}[/]" if level == "ERROR" else f"[yellow]{level}[/]" if level == "WARNING" else f"[dim]{level}[/]"
-            table.add_row(styled, text(event.get("message")))
+            state = str(event.get("state", "STABLE")).upper()
+            styled = f"[red]{state}[/]" if state in ("OFFLINE", "MAX COOLING") else f"[yellow]{state}[/]" if state == "COOLING" else f"[cyan]{state}[/]" if state == "BENCHMARK" else f"[green]{state}[/]"
+            message = text(event.get("message"))
+            table.add_row(text(event.get("time")), styled, text(event.get("miner")), message[:64], key=str(len(table.rows)))
         if not events:
-            table.add_row("[dim]INFO[/]", "No recent thermal events")
+            table.add_row("—", "[dim]STABLE[/]", "—", "No recent operational transitions")
+        self._events = events
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        index = event.cursor_row
+        if 0 <= index < len(getattr(self, "_events", [])):
+            item = self._events[index]
+            self.query_one("#event-detail", Static).update(text(item.get("raw_message") or item.get("message")))
 
     def action_cursor_down(self) -> None:
         self.query_one("#events-table", DataTable).action_cursor_down()
@@ -250,8 +260,13 @@ def bytes_size(value) -> str:
 
 
 def timestamp(value) -> str:
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
+        except ValueError:
+            return value
     try:
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(value)))
+        return datetime.fromtimestamp(float(value)).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
     except (TypeError, ValueError, OSError):
         return "—"
 
@@ -280,9 +295,9 @@ class SystemScreen(SnapshotScreen):
             f"Data Freshness         {freshness}\nUptime                 {duration(diagnostics.get('uptime_seconds'))}\n"
             f"Version                {text(diagnostics.get('version'))}\n\n"
             "[bold]DATA[/]\n"
-            f"Last Miner Update      {text(diagnostics.get('snapshot_updated'))}\n"
-            f"Last Thermal Update    {timestamp(thermal.get('updated_epoch'))}\n"
-            f"Last History Write     {timestamp(history.get('updated_epoch'))}\n"
+            f"Last Miner Update      {timestamp(diagnostics.get('snapshot_updated'))}\n"
+            f"Last Thermal Update    {timestamp(thermal.get('updated') or thermal.get('updated_epoch'))}\n"
+            f"Last History Write     {timestamp(history.get('updated') or history.get('updated_epoch'))}\n"
             f"API Response           {number(snapshot.get('api_response_ms'), 1, ' ms')}\n\n"
             "[bold]STORAGE · APP DATA ONLY[/]\n"
             f"History Data           {bytes_size(storage.get('history_bytes'))}\n"

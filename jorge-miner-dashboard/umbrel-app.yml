@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Miner Dashboard Test
-version: "1.2.21"
+version: "1.2.22"
 tagline: Test the Umbrel-native miner dashboard
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
@@ -25,5 +25,6 @@ torOnly: false
 submitter: Jorge
 submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 releaseNotes: >-
-  Fixes live dashboard collection when a miner or pool reports an unknown coin
-  and network difficulty.
+  Adds the responsive live fleet list, explicit fleet location and telemetry
+  modeling, Braiins worker adoption, corrected unmanaged thermal behavior, and
+  expanded Web and terminal dashboard support.

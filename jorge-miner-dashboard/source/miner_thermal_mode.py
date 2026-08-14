@@ -48,6 +48,9 @@ def load_miners():
     with CONFIG_PATH.open("r") as f:
         return json.load(f)
 
+def thermal_eligible(miner):
+    return str(miner.get("telemetry_source") or "LOCAL_API").upper() == "LOCAL_API" and miner.get("enabled", True)
+
 
 def should_skip_for_lock(miner, locks):
     lock = active_lock_for(miner["name"], locks)
@@ -168,7 +171,7 @@ def main():
 
         locks = load_locks(LOCKS_PATH)
         for miner in miners:
-            if miner.get("enabled", True) and not should_skip_for_lock(miner, locks):
+            if thermal_eligible(miner) and not should_skip_for_lock(miner, locks):
                 manage_miner(miner, states)
         HEARTBEAT_PATH.touch()
         time.sleep(CHECK_INTERVAL)

@@ -1,4 +1,5 @@
 let latestMiners = [];
+let latestThermalCounts = {};
 
 const MINER_DISPLAY_ORDER = [
     'BitaxeBTC',
@@ -122,30 +123,37 @@ function difficultyPct(best, network) {
 function renderMinerDashboard(data) {
     const miners = sortMiners(data.miners || []);
     const grid = el('minerGrid');
-    grid.innerHTML = '';
+    grid.innerHTML = `<div class="live-fleet-head" aria-hidden="true">
+        <span>State</span><span>Miner</span><span>TH/s</span><span>ASIC</span><span>VR</span><span>MHz</span><span>Thermal</span>
+    </div>`;
     let totalTH = 0;
 
     miners.forEach(miner => {
         totalTH += numeric(miner.th) || 0;
         const offsite = miner.location_scope === 'OFF-SITE';
-        const thermal = miner.management || (offsite ? 'UNMANAGED' : 'MANAGED');
+        const remoteTelemetry = miner.telemetry_source === 'BRAIINS';
+        const management = miner.management || (offsite ? 'UNMANAGED' : 'MANAGED');
+        const unmanaged = management === 'UNMANAGED';
+        const thermalStatus = unmanaged ? 'UNMANAGED' : (miner.thermal_status || miner.status || '—');
         const hash = metricValue(miner.th, 2);
-        const scopeLabel = offsite
-            ? ''
-            : (thermal === 'UNMANAGED' ? '<div class="scope-label">UNMANAGED</div>' : '');
-        const telemetry = offsite
-            ? `<div class="details remote-details">Pool ${escapeHtml(miner.pool || 'Braiins')}<br>Remote worker</div>`
-            : `<div class="temp">${metricValue(miner.temp, 1, '°C')}</div>
-               <div class="details">Pool ${escapeHtml(miner.pool || '—')}<br>${metricValue(miner.freq, 0, ' MHz')}<br>${metricValue(miner.volt, 0, ' mV')}<br>VR ${miner.vr_temp === -1 ? '—' : metricValue(miner.vr_temp, 1, '°C')}<br>Reject ${metricValue(miner.reject, 2, '%')}</div>`;
-        const card = document.createElement('div');
-        card.className = `mobile-card ${miner.status_class || miner.status} ${offsite ? 'offsite-card' : 'local-card'}`;
-        card.innerHTML = `
-            <div class="miner-name">${escapeHtml(miner.name)}</div>
-            ${scopeLabel}
-            <div class="hashrate">${hash} <small>TH</small></div>
-            ${telemetry}
-            <div class="status ${miner.status_class || miner.status}">${escapeHtml(miner.status)}</div>`;
-        grid.appendChild(card);
+        const inactive = offsite && !miner.online;
+        const state = offsite
+            ? (inactive ? 'OFF-SITE INACTIVE' : 'OFF-SITE')
+            : (unmanaged ? `UNMANAGED${miner.online ? '' : ' · OFFLINE'}` : (miner.online ? '' : 'OFFLINE'));
+        const secondary = offsite
+            ? (inactive ? 'Remote · inactive' : 'Remote · active')
+            : (unmanaged ? (remoteTelemetry ? 'Braiins telemetry' : 'Local telemetry available') : '');
+        const row = document.createElement('div');
+        row.className = `live-fleet-row ${offsite ? 'is-offsite' : 'is-local'} ${inactive ? 'is-inactive' : ''} ${unmanaged ? 'is-unmanaged' : ''}`;
+        row.innerHTML = `
+            <div class="fleet-state">${state ? escapeHtml(state) : '<span class="local-dot" title="Local and online">●</span>'}</div>
+            <div class="fleet-miner">${escapeHtml(miner.name)}${secondary ? `<small>${escapeHtml(secondary)}</small>` : ''}</div>
+            <div class="fleet-hash"><b>${hash}</b><small> TH/s</small></div>
+            <div class="fleet-asic">${remoteTelemetry ? '—' : metricValue(miner.temp, 1, '°')}</div>
+            <div class="fleet-vr">${remoteTelemetry || miner.vr_temp === -1 ? '—' : metricValue(miner.vr_temp, 1, '°')}</div>
+            <div class="fleet-mhz">${remoteTelemetry ? '—' : metricValue(miner.freq, 0)}</div>
+            <div class="fleet-thermal ${escapeHtml(thermalStatus.replaceAll(' ', '-'))}">${escapeHtml(thermalStatus)}</div>`;
+        grid.appendChild(row);
     });
 
     const health = Number.isFinite(data.health) ? data.health : null;
@@ -268,6 +276,7 @@ async function loadPerformance() {
 
     sortMiners(data.performance || []).forEach(perf => {
         const now = nowMap[perf.name] || {};
+        const remoteTelemetry = now.telemetry_source === 'BRAIINS';
         const nowTH = numeric(perf.th_now) ?? numeric(now.th);
         let cls = '';
         if (numeric(perf.th_60m) > 0 && nowTH !== null) {
@@ -277,17 +286,15 @@ async function loadPerformance() {
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>${escapeHtml(perf.name.replace('Bitaxe', 'BAxe'))}</td>
-            <td class="${cls}"><b>${metricValue(nowTH, 2)}</b><br><small>${metricValue(now.freq, 0, ' MHz')}</small></td>
+            <td class="${cls}"><b>${metricValue(nowTH, 2)}</b><br><small>${remoteTelemetry ? '—' : metricValue(now.freq, 0, ' MHz')}</small></td>
             <td>${fmt(perf.th_60m, 2, '')}</td><td>${fmt(perf.th_12h, 2, '')}</td>
             <td>${fmt(perf.th_24h, 2, '')}</td>
-            <td>${metricValue(now.temp, 1)}/${numeric(now.vr_temp) !== null && Number(now.vr_temp) >= 0 ? metricValue(now.vr_temp, 1) : '—'}°</td>`;
+            <td>${remoteTelemetry ? '—/—' : `${metricValue(now.temp, 1)}/${numeric(now.vr_temp) !== null && Number(now.vr_temp) >= 0 ? metricValue(now.vr_temp, 1) : '—'}°`}</td>`;
         rows.appendChild(row);
     });
 
-    const counts = {STABLE: 0, HOLDING: 0, COOLING: 0, 'MAX COOLING': 0, BENCHMARK: 0};
-    latestMiners.forEach(miner => {
-        if (counts[miner.status] !== undefined) counts[miner.status]++;
-    });
+    const snapshotCounts = latestThermalCounts;
+    const counts = {STABLE: 0, HOLDING: 0, COOLING: 0, 'MAX COOLING': 0, BENCHMARK: 0, ...snapshotCounts};
     el('thermalStrip').innerHTML =
         `<span class="stable">Stable ${counts.STABLE}</span>&nbsp;&nbsp;` +
         `<span class="holding">Holding ${counts.HOLDING}</span>&nbsp;&nbsp;` +
@@ -335,6 +342,7 @@ async function loadData() {
     if (!response.ok) throw new Error(`Dashboard API returned ${response.status}`);
     const data = await response.json();
     latestMiners = data.miners || [];
+    latestThermalCounts = data.thermal_counts || {};
     renderMinerDashboard(data);
     renderStrategy(data);
     await loadPerformance();

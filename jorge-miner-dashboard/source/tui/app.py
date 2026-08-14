@@ -165,6 +165,7 @@ class MinerDashboardApp(App):
         render = getattr(self.screen, "render_snapshot", None)
         if render:
             self.screen.call_after_refresh(render, self.snapshot)
+        self.screen.call_after_refresh(self.update_api_status)
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())

@@ -31,7 +31,12 @@ class OverviewScreen(MinerTableScreen):
             return
         miners = snapshot.get("miners", []) if isinstance(snapshot, dict) else []
         miners = miners if isinstance(miners, list) else []
-        online = sum(1 for miner in miners if isinstance(miner, dict) and miner.get("online") is True)
+        summary = snapshot.get("fleet_summary", {}) if isinstance(snapshot, dict) else {}
+        summary = summary if isinstance(summary, dict) else {}
+        online = summary.get("active")
+        online = online if isinstance(online, int) and not isinstance(online, bool) else sum(
+            1 for miner in miners if isinstance(miner, dict) and miner.get("online") is True
+        )
         health = snapshot.get("health") if isinstance(snapshot, dict) else None
         alerts = snapshot.get("alert_count") if isinstance(snapshot, dict) else None
         health = health if isinstance(health, (int, float)) and not isinstance(health, bool) else None
@@ -48,8 +53,10 @@ class OverviewScreen(MinerTableScreen):
         )
         local = [miner for miner in miners if miner.get("location_scope", "LOCAL") == "LOCAL"]
         remote = [miner for miner in miners if miner.get("location_scope") == "OFF-SITE"]
-        local_online = sum(miner.get("online") is True for miner in local)
-        remote_mining = sum(miner.get("online") is True for miner in remote)
+        local_online = summary.get("local_online", sum(miner.get("online") is True and float(miner.get("th") or 0) > 0 for miner in local))
+        remote_mining = summary.get("offsite_mining", sum(miner.get("online") is True for miner in remote))
+        local_total = summary.get("local_total", len(local))
+        remote_total = summary.get("offsite_total", len(remote))
         self.query_one("#fleet-scope", Static).update(
-            f"Local [bold]{local_online}/{len(local)} online[/]   Off-site [bold]{remote_mining}/{len(remote)} mining[/]"
+            f"Local [bold]{local_online}/{local_total} online[/]   Off-site [bold]{remote_mining}/{remote_total} mining[/]"
         )

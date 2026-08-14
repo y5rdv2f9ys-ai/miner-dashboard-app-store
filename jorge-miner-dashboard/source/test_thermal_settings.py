@@ -217,12 +217,11 @@ class ThermalSettingsTests(unittest.TestCase):
             "name": "TestMiner",
             "type": "axeos",
             "ip": "192.168.1.115",
-            "pool": "Updated",
-            "coin": "bch",
+            "pool": "BCH SoloPool",
         })
         saved = json.loads(self.path.read_text())[0]
         self.assertEqual(saved["ip"], "192.168.1.115")
-        self.assertEqual(saved["pool"], "Updated")
+        self.assertEqual(saved["pool"], "BCH SoloPool")
         self.assertEqual(saved["coin"], "BCH")
         self.assertEqual(saved["base_freq"], 600)
         self.assertEqual(saved["unrelated"], "preserved")
@@ -233,8 +232,7 @@ class ThermalSettingsTests(unittest.TestCase):
                 "name": "TestMiner",
                 "type": "axeos",
                 "ip": "192.168.1.115",
-                "pool": "",
-                "coin": "",
+                "pool": "Umbrel Solo",
             })
         self.assertEqual(json.loads(self.path.read_text()), [self.original])
 
@@ -243,8 +241,7 @@ class ThermalSettingsTests(unittest.TestCase):
             "name": "New Axe",
             "type": "axeos",
             "ip": "192.168.1.115",
-            "pool": "",
-            "coin": "",
+            "pool": "Umbrel Solo",
         })
         app_v2.delete_miner({"name": "New Axe"})
         self.assertEqual(json.loads(self.path.read_text()), [self.original])
@@ -255,8 +252,7 @@ class ThermalSettingsTests(unittest.TestCase):
                 "name": "Bad Ip",
                 "type": "axeos",
                 "ip": "not-an-ip",
-                "pool": "",
-                "coin": "",
+                "pool": "Umbrel Solo",
             })
 
     def test_start_benchmark_session_creates_read_only_completed_session(self):

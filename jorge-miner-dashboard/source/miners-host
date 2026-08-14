@@ -1,7 +1,25 @@
 #!/bin/sh
 set -eu
 
-container_id="$(docker ps \
+use_sudo=0
+if docker ps >/dev/null 2>&1; then
+    :
+elif command -v sudo >/dev/null 2>&1 && sudo -n docker ps >/dev/null 2>&1; then
+    use_sudo=1
+else
+    echo "Cannot access Docker. Run as a user with Docker access or passwordless sudo." >&2
+    exit 1
+fi
+
+docker_cli() {
+    if [ "$use_sudo" -eq 1 ]; then
+        sudo -n docker "$@"
+    else
+        docker "$@"
+    fi
+}
+
+container_id="$(docker_cli ps \
     --filter label=com.docker.compose.project=jorge-miner-dashboard \
     --filter label=com.docker.compose.service=dashboard \
     --format '{{.ID}}' | sed -n '1p')"
@@ -11,4 +29,13 @@ if [ -z "$container_id" ]; then
     exit 1
 fi
 
-exec docker exec -it "$container_id" miners-tui "$@"
+if [ -t 0 ] && [ -t 1 ]; then
+    exec_tty="-it"
+else
+    exec_tty="-i"
+fi
+
+if [ "$use_sudo" -eq 1 ]; then
+    exec sudo -n docker exec "$exec_tty" "$container_id" miners-tui "$@"
+fi
+exec docker exec "$exec_tty" "$container_id" miners-tui "$@"
