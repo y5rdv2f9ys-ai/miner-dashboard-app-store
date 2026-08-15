@@ -143,7 +143,11 @@ def get_profile(profile_id):
 
 def profile_text(miner, stats=None):
     parts = []
-    for source in (miner or {}, stats or {}):
+    configured_identity = (miner or {}).get("identity")
+    sources = [miner or {}, stats or {}]
+    if isinstance(configured_identity, dict):
+        sources.append(configured_identity)
+    for source in sources:
         for key in (
             "name",
             "type",

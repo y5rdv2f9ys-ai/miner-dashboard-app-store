@@ -19,6 +19,82 @@ class BenchmarkProfilesTests(unittest.TestCase):
         self.assertEqual(profile["safety"]["max_chip_temp"], 70)
         self.assertEqual(profile["safety"]["max_vr_temp"], 85)
 
+    def test_selects_bitaxe_403_name_with_space(self):
+        profile = benchmark_profiles.select_profile(
+            {"name": "Bitaxe 403", "type": "axeos"}, {}
+        )
+        self.assertEqual(profile["id"], "axeos_bitaxe403_bm1368")
+
+    def test_selects_live_bm1368_asic_model(self):
+        profile = benchmark_profiles.select_profile(
+            {"name": "Miner", "type": "axeos"}, {"ASICModel": "BM1368"}
+        )
+        self.assertEqual(profile["id"], "axeos_bitaxe403_bm1368")
+
+    def test_selects_nested_configured_bm1368_identity(self):
+        profile = benchmark_profiles.select_profile(
+            {
+                "name": "Renamed Miner",
+                "type": "axeos",
+                "identity": {"hostname": "Bitaxe403", "model": "BM1368"},
+            },
+            {},
+        )
+        self.assertEqual(profile["id"], "axeos_bitaxe403_bm1368")
+
+    def test_ordinary_bitaxe_does_not_select_403_profile(self):
+        profile = benchmark_profiles.select_profile(
+            {"name": "Bitaxe001", "type": "axeos"}, {"ASICModel": "BM1370"}
+        )
+        self.assertEqual(profile["id"], "axeos_bitaxe")
+
+    def test_generic_axeos_fallback_remains_functional(self):
+        profile = benchmark_profiles.select_profile(
+            {"name": "Unknown Miner", "type": "axeos"}, {}
+        )
+        self.assertEqual(profile["id"], "axeos_bitaxe")
+
+    def test_bitaxe403_matrix_and_safety_are_unchanged(self):
+        import benchmark_engine
+
+        profile = benchmark_profiles.select_profile(
+            {"name": "Bitaxe403", "type": "axeos"},
+            {"ASICModel": "BM1368", "frequency": 500, "coreVoltage": 1150},
+        )
+        matrix = benchmark_engine.generate_matrix(
+            profile, baseline={"frequency": 500, "voltage": 1150}
+        )
+
+        self.assertEqual(len(matrix), 24)
+        self.assertEqual(
+            sorted({candidate["frequency"] for candidate in matrix}),
+            [525, 550, 575, 600, 625, 650],
+        )
+        self.assertEqual(
+            sorted({candidate["voltage"] for candidate in matrix}),
+            [1050, 1130, 1150, 1200],
+        )
+        self.assertEqual(max(candidate["frequency"] for candidate in matrix), 650)
+        self.assertEqual(max(candidate["voltage"] for candidate in matrix), 1200)
+        self.assertNotIn(1250, {candidate["voltage"] for candidate in matrix})
+        self.assertEqual(profile["safe_reference"], {"frequency": 500, "voltage": 1150})
+        self.assertEqual(profile["safety"], {
+            "min_hashrate_th": 0.5,
+            "low_hashrate_seconds": 60,
+            "max_chip_temp": 70,
+            "max_vr_temp": 85,
+            "power_warning_watts": 22,
+            "max_power_watts": 24,
+            "min_input_voltage": 4.8,
+            "max_input_voltage": 5.5,
+            "max_reject_pct": 2.0,
+            "max_error_percentage": 5.0,
+            "instability_sample_limit": 3,
+            "api_failure_limit": 3,
+            "zero_hashrate_seconds": 60,
+            "watchdog_seconds": 900,
+        })
+
     def test_selects_bitaxe_profile_from_axeos_type(self):
         profile = benchmark_profiles.select_profile(
             {"name": "BitaxeBTC", "type": "axeos"},
