@@ -78,11 +78,12 @@ h1 {
 }
 
 .live-fleet-list {
-    margin: 14px auto 0;
-    border: 1px solid #29323c;
-    border-radius: 12px;
-    overflow: hidden;
-    background: #0d1115;
+    margin: 12px auto 0;
+    border: 1px solid #2d2d2d;
+    border-radius: 16px;
+    overflow: clip;
+    background: #151515;
+    box-shadow: 0 0 18px rgba(255,255,255,0.05);
 }
 
 .live-fleet-head,
@@ -94,22 +95,22 @@ h1 {
 }
 
 .live-fleet-head {
-    min-height: 38px;
-    padding: 8px 16px;
-    background: #151b21;
-    color: #7f8a96;
-    font-size: 10px;
+    padding: 10px 12px;
+    background: #1b1b1b;
+    color: #aaa;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: .04em;
     text-transform: uppercase;
 }
 
 .live-fleet-row {
-    min-height: 64px;
-    padding: 10px 16px;
-    border-top: 1px solid #242d35;
-    font-size: 12px;
+    padding: 10px 12px;
+    border-top: 1px solid #262626;
+    font-size: 14px;
 }
+
+.live-fleet-row:nth-child(odd) { background: #101010; }
 
 .live-fleet-row.is-inactive {
     background: #0a0d10;
@@ -139,7 +140,7 @@ h1 {
 
 .fleet-miner small {
     display: block;
-    margin-top: 4px;
+    margin-top: 2px;
     color: #77828e;
     font-size: 10px;
     font-weight: 500;
@@ -166,15 +167,38 @@ h1 {
 }
 
 @media (max-width: 430px) {
+    .dashboard-page {
+        padding-top: 12px;
+    }
+
+    .dashboard-page h1 {
+        font-size: 22px;
+        line-height: 1.1;
+        white-space: nowrap;
+    }
+
+    .dashboard-page .mobile-total {
+        font-size: 20px;
+    }
+
+    .dashboard-page .footer,
+    .dashboard-page .mobile-summary-line,
+    .dashboard-page .fleet-breakdown {
+        margin-top: 2px;
+    }
+
     .live-fleet-head,
     .live-fleet-row {
         grid-template-columns: 50px minmax(80px, 1fr) 48px 42px 70px;
-        column-gap: 8px;
+        column-gap: 6px;
+        padding-left: 6px;
+        padding-right: 6px;
     }
-    .live-fleet-head { min-height: 36px; font-size: 9px; }
-    .live-fleet-row { min-height: 68px; padding-top: 10px; padding-bottom: 10px; }
-    .fleet-miner { font-size: 14px; }
-    .fleet-hash b { font-size: 15px; }
+    .live-fleet-head { padding-top: 7px; padding-bottom: 7px; font-size: 11px; }
+    .live-fleet-row { padding-top: 7px; padding-bottom: 7px; font-size: 12px; }
+    .fleet-miner { font-size: 12px; }
+    .fleet-miner small { font-size: 9px; }
+    .fleet-hash b { font-size: 14px; }
     .live-fleet-head span:nth-child(5),
     .live-fleet-head span:nth-child(6),
     .fleet-vr,

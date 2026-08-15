@@ -139,10 +139,10 @@ function renderMinerDashboard(data) {
         const inactive = offsite && !miner.online;
         const state = offsite
             ? (inactive ? 'OFF-SITE INACTIVE' : 'OFF-SITE')
-            : (unmanaged ? `UNMANAGED${miner.online ? '' : ' · OFFLINE'}` : (miner.online ? '' : 'OFFLINE'));
+            : (miner.online ? '' : 'OFFLINE');
         const secondary = offsite
             ? (inactive ? 'Remote · inactive' : 'Remote · active')
-            : (unmanaged ? (remoteTelemetry ? 'Braiins telemetry' : 'Local telemetry available') : '');
+            : '';
         const row = document.createElement('div');
         row.className = `live-fleet-row ${offsite ? 'is-offsite' : 'is-local'} ${inactive ? 'is-inactive' : ''} ${unmanaged ? 'is-unmanaged' : ''}`;
         row.innerHTML = `
