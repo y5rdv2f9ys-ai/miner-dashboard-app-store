@@ -84,7 +84,16 @@ def generate_matrix(profile, baseline=None, max_candidates=60):
     return candidates
 
 
-def safety_failure(profile, sample, api_failures=0, zero_hashrate_seconds=0, elapsed_seconds=0):
+def safety_failure(
+    profile,
+    sample,
+    api_failures=0,
+    zero_hashrate_seconds=0,
+    low_hashrate_seconds=0,
+    reject_samples=0,
+    error_samples=0,
+    elapsed_seconds=0,
+):
     safety = benchmark_profiles.safety_cutoffs(profile)
     if api_failures >= safety["api_failure_limit"]:
         return "API_FAILURE_LIMIT"
@@ -92,6 +101,13 @@ def safety_failure(profile, sample, api_failures=0, zero_hashrate_seconds=0, ela
         return "WATCHDOG_TIMEOUT"
     if zero_hashrate_seconds >= safety["zero_hashrate_seconds"]:
         return "ZERO_HASHRATE_TIMEOUT"
+    if low_hashrate_seconds >= safety.get("low_hashrate_seconds", 60):
+        return "LOW_HASHRATE_TIMEOUT"
+    instability_limit = safety.get("instability_sample_limit", 3)
+    if reject_samples >= instability_limit:
+        return "REJECT_RATE_PERSISTENT"
+    if error_samples >= instability_limit:
+        return "ASIC_ERRORS_PERSISTENT"
     # A missing sample is a transient API failure unless the caller's
     # consecutive-failure count has reached the configured limit.
     if sample is None:
@@ -128,6 +144,16 @@ def safety_failure(profile, sample, api_failures=0, zero_hashrate_seconds=0, ela
         return "ZERO_HASHRATE"
 
     return None
+
+
+def safety_warnings(profile, sample):
+    if sample is None:
+        return []
+    warning_watts = profile.get("safety", {}).get("power_warning_watts")
+    watts = sample.get("watts", sample.get("power"))
+    if warning_watts is not None and watts is not None and float(watts) >= warning_watts:
+        return ["POWER_WARNING"]
+    return []
 
 
 def average(values):

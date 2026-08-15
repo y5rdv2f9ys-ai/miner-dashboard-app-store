@@ -66,7 +66,7 @@ BENCHMARK_REPORT_RETENTION_DAYS = 7
 THERMAL_LOCKS_PATH = DATA_DIR / "thermal_locks.json"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
-APP_VERSION = os.environ.get("APP_VERSION", "1.2.23")
+APP_VERSION = os.environ.get("APP_VERSION", "1.2.24")
 BTC_BLOCKS_DB = Path(
     os.environ.get("PUBLIC_POOL_DB_PATH", "/public-pool/public-pool.sqlite")
 )
@@ -1954,113 +1954,125 @@ def sample_benchmark_candidate(
         total_samples = min(total_samples, int(max_samples))
 
     samples = []
+    warnings = set()
     api_failures = 0
     zero_hashrate_seconds = 0
+    low_hashrate_seconds = 0
+    reject_samples = 0
+    error_samples = 0
     elapsed_seconds = 0
-    try:
-        if timing.get("warmup_seconds"):
-            remaining = int(timing["warmup_seconds"])
-            while remaining > 0:
-                if cancel_event is not None and cancel_event.is_set():
-                    raise ValueError("Benchmark canceled by user")
-                duration = min(interval, remaining) if sleep_fn is time.sleep else remaining
-                sleep_fn(duration)
-                remaining -= duration
-        for _ in range(total_samples):
-            if cancel_event is not None and cancel_event.is_set():
-                raise ValueError("Benchmark canceled by user")
-            sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
-            active_session = sessions.get(session_id)
-            if (
-                not isinstance(active_session, dict)
-                or active_session.get("state") not in benchmark_sessions.ACTIVE_STATES
-            ):
-                raise ValueError("Benchmark session is not active")
-            try:
-                sample = sample_provider()
-            except Exception:
-                sample = None
-            if sample is None:
-                api_failures += 1
-            else:
-                api_failures = 0
-                samples.append(sample)
-                if sample.get("th") is not None and sample.get("th") <= 0:
-                    zero_hashrate_seconds += interval
-                else:
-                    zero_hashrate_seconds = 0
 
-            safety_decision = benchmark_engine.safety_failure(
-                profile,
-                sample,
-                api_failures=api_failures,
-                zero_hashrate_seconds=zero_hashrate_seconds,
-                elapsed_seconds=elapsed_seconds,
+    def ensure_candidate_active():
+        if cancel_event is not None and cancel_event.is_set():
+            raise ValueError("Benchmark canceled by user")
+        current = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH).get(session_id)
+        if not isinstance(current, dict) or current.get("state") not in benchmark_sessions.ACTIVE_STATES:
+            raise ValueError("Benchmark session is not active")
+
+    def collect_safety_sample(duration):
+        nonlocal api_failures, zero_hashrate_seconds, low_hashrate_seconds
+        nonlocal reject_samples, error_samples, elapsed_seconds
+        ensure_candidate_active()
+        try:
+            sample = sample_provider()
+        except Exception:
+            sample = None
+        safety_duration = min(duration, interval)
+        if sample is None:
+            api_failures += 1
+        else:
+            api_failures = 0
+            samples.append(sample)
+            warnings.update(benchmark_engine.safety_warnings(profile, sample))
+            hashrate = sample.get("th")
+            zero_hashrate_seconds = (
+                zero_hashrate_seconds + safety_duration
+                if hashrate is not None and hashrate <= 0 else 0
             )
-            if safety_decision:
-                summary = benchmark_engine.sample_summary(samples)
-                benchmark_results.update_candidate_result(
-                    BENCHMARK_RESULTS_PATH,
-                    session_id,
-                    int(sequence),
-                    {
-                        "status": "aborted",
-                        "safety_decision": safety_decision,
-                        "sample_summary": summary,
-                    },
-                )
-                try:
-                    if full_run:
-                        restore_candidate_for_continuation(
-                            session_id, restore_profile, profile
-                        )
-                        return {
-                            "ok": False,
-                            "aborted": True,
-                            "session_id": session_id,
-                            "sequence": int(sequence),
-                            "reason": safety_decision,
-                            "result": benchmark_results.candidate_result(
-                                BENCHMARK_RESULTS_PATH, session_id, int(sequence)
-                            ),
-                        }
-                    restore_benchmark_miner(restore_profile)
-                    reason = f"candidate_aborted: {safety_decision}"
-                    benchmark_restore.mark_restore_profile(
-                        BENCHMARK_RESTORE_PATH,
-                        session_id,
-                        "restored",
-                        reason=reason,
-                    )
-                    if not thermal_locks.release_lock(
-                        THERMAL_LOCKS_PATH,
-                        session.get("miner", ""),
-                        session_id=session_id,
-                    ):
-                        raise RuntimeError(
-                            "matching benchmark thermal lock could not be released"
-                        )
-                except Exception as restore_error:
-                    mark_benchmark_restore_recovery_required(
-                        session_id,
-                        restore_error,
-                        f"candidate_aborted_{safety_decision}",
-                    )
-                    raise ValueError(f"Benchmark candidate aborted: {safety_decision}")
-                else:
-                    benchmark_sessions.transition_session(
-                        BENCHMARK_SESSIONS_PATH,
-                        session_id,
-                        "failed",
-                        reason=reason,
-                    )
-                raise ValueError(f"Benchmark candidate aborted: {safety_decision}")
+            minimum_hashrate = profile["safety"]["min_hashrate_th"]
+            low_hashrate_seconds = (
+                low_hashrate_seconds + safety_duration
+                if hashrate is not None and hashrate < minimum_hashrate else 0
+            )
+            reject_samples = (
+                reject_samples + 1
+                if float(sample.get("reject") or 0) >= profile["safety"]["max_reject_pct"] else 0
+            )
+            error_samples = (
+                error_samples + 1
+                if float(sample.get("errorPercentage") or 0)
+                >= profile["safety"]["max_error_percentage"] else 0
+            )
+        decision = benchmark_engine.safety_failure(
+            profile,
+            sample,
+            api_failures=api_failures,
+            zero_hashrate_seconds=zero_hashrate_seconds,
+            low_hashrate_seconds=low_hashrate_seconds,
+            reject_samples=reject_samples,
+            error_samples=error_samples,
+            elapsed_seconds=elapsed_seconds,
+        )
+        elapsed_seconds += duration
+        return decision
 
-            elapsed_seconds += interval
-            if elapsed_seconds < timing["test_seconds"]:
-                sleep_fn(interval)
-    except Exception:
-        raise
+    def abort_candidate(safety_decision):
+        summary = benchmark_engine.sample_summary(samples)
+        summary["warnings"] = sorted(warnings)
+        benchmark_results.update_candidate_result(
+            BENCHMARK_RESULTS_PATH,
+            session_id,
+            int(sequence),
+            {"status": "aborted", "safety_decision": safety_decision, "sample_summary": summary},
+        )
+        try:
+            if full_run:
+                restore_candidate_for_continuation(session_id, restore_profile, profile)
+                return {
+                    "ok": False, "aborted": True, "session_id": session_id,
+                    "sequence": int(sequence), "reason": safety_decision,
+                    "result": benchmark_results.candidate_result(
+                        BENCHMARK_RESULTS_PATH, session_id, int(sequence)
+                    ),
+                }
+            restore_benchmark_miner(restore_profile)
+            reason = f"candidate_aborted: {safety_decision}"
+            benchmark_restore.mark_restore_profile(
+                BENCHMARK_RESTORE_PATH, session_id, "restored", reason=reason
+            )
+            if not thermal_locks.release_lock(
+                THERMAL_LOCKS_PATH, session.get("miner", ""), session_id=session_id
+            ):
+                raise RuntimeError("matching benchmark thermal lock could not be released")
+        except Exception as restore_error:
+            mark_benchmark_restore_recovery_required(
+                session_id, restore_error, f"candidate_aborted_{safety_decision}"
+            )
+            raise ValueError(f"Benchmark candidate aborted: {safety_decision}")
+        benchmark_sessions.transition_session(
+            BENCHMARK_SESSIONS_PATH, session_id, "failed", reason=reason
+        )
+        raise ValueError(f"Benchmark candidate aborted: {safety_decision}")
+
+    remaining = int(timing.get("warmup_seconds", 0) or 0)
+    while remaining > 0:
+        duration = min(interval, remaining) if sleep_fn is time.sleep else remaining
+        sleep_fn(duration)
+        remaining -= duration
+        safety_decision = collect_safety_sample(duration)
+        if safety_decision:
+            result = abort_candidate(safety_decision)
+            if result:
+                return result
+
+    for sample_index in range(total_samples):
+        safety_decision = collect_safety_sample(interval)
+        if safety_decision:
+            result = abort_candidate(safety_decision)
+            if result:
+                return result
+        if sample_index + 1 < total_samples:
+            sleep_fn(interval)
 
     sessions = benchmark_sessions.load_sessions(BENCHMARK_SESSIONS_PATH)
     active_session = sessions.get(session_id)
@@ -2071,6 +2083,7 @@ def sample_benchmark_candidate(
         raise ValueError("Benchmark session is not active")
 
     summary = benchmark_engine.sample_summary(samples)
+    summary["warnings"] = sorted(warnings)
     row = benchmark_results.update_candidate_result(
         BENCHMARK_RESULTS_PATH,
         session_id,

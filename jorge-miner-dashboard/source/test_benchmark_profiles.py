@@ -4,6 +4,21 @@ import benchmark_profiles
 
 
 class BenchmarkProfilesTests(unittest.TestCase):
+    def test_selects_dedicated_bitaxe403_bm1368_profile(self):
+        profile = benchmark_profiles.select_profile(
+            {"name": "Bitaxe403", "type": "axeos"},
+            {"ASICModel": "BM1368", "boardVersion": "403"},
+        )
+
+        self.assertEqual(profile["id"], "axeos_bitaxe403_bm1368")
+        self.assertEqual(profile["frequency"], {"min": 525, "max": 650, "step": 25})
+        self.assertEqual(profile["voltage"]["max"], 1200)
+        self.assertEqual(profile["safe_reference"], {"frequency": 500, "voltage": 1150})
+        self.assertEqual(profile["safety"]["power_warning_watts"], 22)
+        self.assertEqual(profile["safety"]["max_power_watts"], 24)
+        self.assertEqual(profile["safety"]["max_chip_temp"], 70)
+        self.assertEqual(profile["safety"]["max_vr_temp"], 85)
+
     def test_selects_bitaxe_profile_from_axeos_type(self):
         profile = benchmark_profiles.select_profile(
             {"name": "BitaxeBTC", "type": "axeos"},

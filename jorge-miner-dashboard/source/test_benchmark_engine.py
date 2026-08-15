@@ -136,6 +136,32 @@ class BenchmarkEngineTests(unittest.TestCase):
             "ZERO_HASHRATE",
         )
 
+    def test_safety_failure_enforces_persistent_low_hashrate_and_instability(self):
+        profile = benchmark_profiles.get_profile("axeos_bitaxe403_bm1368")
+        safe = {"temp": 60, "th": 0.49, "reject": 2.5, "errorPercentage": 6}
+
+        self.assertIsNone(benchmark_engine.safety_failure(profile, safe, low_hashrate_seconds=50))
+        self.assertEqual(
+            benchmark_engine.safety_failure(profile, safe, low_hashrate_seconds=60),
+            "LOW_HASHRATE_TIMEOUT",
+        )
+        self.assertEqual(
+            benchmark_engine.safety_failure(profile, safe, reject_samples=3),
+            "REJECT_RATE_PERSISTENT",
+        )
+        self.assertEqual(
+            benchmark_engine.safety_failure(profile, safe, error_samples=3),
+            "ASIC_ERRORS_PERSISTENT",
+        )
+
+    def test_bitaxe403_power_warning_precedes_hard_abort(self):
+        profile = benchmark_profiles.get_profile("axeos_bitaxe403_bm1368")
+        sample = {"temp": 60, "th": 0.6, "power": 22.5}
+        self.assertEqual(benchmark_engine.safety_warnings(profile, sample), ["POWER_WARNING"])
+        self.assertIsNone(benchmark_engine.safety_failure(profile, sample))
+        sample["power"] = 24
+        self.assertEqual(benchmark_engine.safety_failure(profile, sample), "POWER_EXCEEDED")
+
     def test_safety_failure_allows_safe_sample(self):
         profile = benchmark_profiles.get_profile("axeos_bitaxe")
 

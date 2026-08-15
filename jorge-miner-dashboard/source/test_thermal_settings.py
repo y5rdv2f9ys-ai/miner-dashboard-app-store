@@ -871,6 +871,7 @@ class ThermalSettingsTests(unittest.TestCase):
         self.guarded_write_fixture()
         outcomes = iter([
             {"temp": 60, "th": 1.0, "voltage": 5.0, "power": 20},
+            {"temp": 60, "th": 1.0, "voltage": 5.0, "power": 20},
             TimeoutError("first timeout"),
             TimeoutError("second timeout"),
             {"temp": 61, "th": 1.1, "voltage": 5.0, "power": 21},
@@ -894,7 +895,7 @@ class ThermalSettingsTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["samples"], 1)
+        self.assertEqual(result["samples"], 2)
         session = json.loads(self.benchmark_path.read_text())["bench_001"]
         self.assertEqual(session["state"], "benchmarking")
         row = app_v2.benchmark_results.candidate_result(
@@ -904,6 +905,40 @@ class ThermalSettingsTests(unittest.TestCase):
         )
         self.assertEqual(row["status"], "sampled")
         self.assertIsNone(row["safety_decision"])
+
+    def test_sample_benchmark_candidate_monitors_and_aborts_during_warmup(self):
+        self.guarded_write_fixture()
+        samples = iter([
+            {"temp": 60, "th": 1.0, "voltage": 5.0, "power": 20},
+            {"temp": 69, "th": 1.0, "voltage": 5.0, "power": 20},
+        ])
+
+        with patch.object(app_v2, "apply_settings", return_value={"ok": True}) as apply:
+            with self.assertRaisesRegex(ValueError, "CHIP_TEMP_EXCEEDED"):
+                app_v2.sample_benchmark_candidate(
+                    "bench_001", 1, sample_provider=lambda: next(samples),
+                    sleep_fn=lambda seconds: None, max_samples=1,
+                )
+
+        self.assertEqual(apply.call_count, 2)
+        self.assertEqual(apply.call_args_list[1].kwargs["frequency"], 600)
+        row = app_v2.benchmark_results.candidate_result(
+            self.results_path, "bench_001", 1
+        )
+        self.assertEqual(row["safety_decision"], "CHIP_TEMP_EXCEEDED")
+
+    def test_sample_benchmark_candidate_aborts_on_persistent_asic_errors(self):
+        self.guarded_write_fixture()
+        safe = {"temp": 60, "th": 1.0, "voltage": 5.0, "power": 20}
+        unstable = dict(safe, errorPercentage=6)
+        samples = iter([safe, safe, unstable, unstable, unstable])
+
+        with patch.object(app_v2, "apply_settings", return_value={"ok": True}):
+            with self.assertRaisesRegex(ValueError, "ASIC_ERRORS_PERSISTENT"):
+                app_v2.sample_benchmark_candidate(
+                    "bench_001", 1, sample_provider=lambda: next(samples),
+                    sleep_fn=lambda seconds: None, max_samples=3,
+                )
 
     def test_sample_benchmark_candidate_aborts_at_consecutive_api_failure_limit(self):
         self.guarded_write_fixture()

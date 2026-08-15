@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Jorge Miner Dashboard
-version: "1.2.23"
+version: "1.2.24"
 tagline: Monitor and manage your Bitcoin mining fleet
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
@@ -25,5 +25,5 @@ torOnly: false
 submitter: Jorge
 submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 releaseNotes: >-
-  Refines the mobile live fleet list with compact table density, natural page
-  scrolling, a smaller header, and clearer local unmanaged miner rows.
+  Adds warm-up safety monitoring, persistent hashrate/error/reject protection,
+  and a dedicated conservative Bitaxe 403 BM1368 benchmark profile.
