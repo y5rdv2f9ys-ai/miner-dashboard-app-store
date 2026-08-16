@@ -609,7 +609,7 @@ svg {
 .perf-table th {
     color: #aaa !important;
     font-size: 12px !important;
-    padding: 10px 4px !important;
+    padding: 7px 4px !important;
     border-bottom: 1px solid #333 !important;
     text-align: center !important;
     background: #1b1b1b !important;
@@ -623,7 +623,7 @@ svg {
 
 .perf-table td {
     font-size: 14px !important;
-    padding: 10px 4px !important;
+    padding: 7px 4px !important;
     border-bottom: 1px solid #262626 !important;
     text-align: center !important;
     background: #151515 !important;
@@ -3363,12 +3363,12 @@ svg {
     }
 
     .perf-table th {
-        padding: 7px 3px !important;
+        padding: 5px 3px !important;
         font-size: 11px !important;
     }
 
     .perf-table td {
-        padding: 7px 3px !important;
+        padding: 5px 3px !important;
         font-size: 12px !important;
     }
 

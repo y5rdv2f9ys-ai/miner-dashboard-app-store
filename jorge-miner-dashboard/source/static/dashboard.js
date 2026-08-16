@@ -283,7 +283,8 @@ async function loadPerformance() {
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>${escapeHtml(perf.name.replace('Bitaxe', 'BAxe'))}</td>
-            <td class="${cls}"><b>${metricValue(nowTH, 2)}</b><br><small>${remoteTelemetry ? '—' : metricValue(now.freq, 0, ' MHz')}</small></td>
+            <td class="${cls}"><b>${metricValue(nowTH, 2)}</b></td>
+            <td>${remoteTelemetry ? '—' : metricValue(now.freq, 0)}</td>
             <td>${fmt(perf.th_60m, 2, '')}</td><td>${fmt(perf.th_12h, 2, '')}</td>
             <td>${fmt(perf.th_24h, 2, '')}</td>
             <td>${remoteTelemetry ? '—/—' : `${metricValue(now.temp, 1)}/${numeric(now.vr_temp) !== null && Number(now.vr_temp) >= 0 ? metricValue(now.vr_temp, 1) : '—'}°`}</td>`;

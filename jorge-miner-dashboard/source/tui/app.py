@@ -63,6 +63,9 @@ class MinerDashboardApp(App):
     #pool-details { height: auto; min-height: 8; }
     #pool-workers { height: auto; min-height: 4; }
     #events-table { height: 1fr; }
+    #system-panels { width: 1fr; height: auto; grid-size: 1; grid-gutter: 1; }
+    #system-panels.wide { grid-size: 3 1; }
+    #system-panels .section { height: 1fr; margin-bottom: 0; }
     #detail-scroll { margin: 0 2; padding: 1 2; border: round #3f3f46; }
     #detail-content { width: 1fr; }
     .placeholder { margin: 2; padding: 2; border: round #3f3f46; color: #a1a1aa; }

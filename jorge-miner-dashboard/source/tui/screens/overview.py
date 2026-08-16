@@ -10,7 +10,10 @@ from .base import MinerTableScreen, service_label
 
 class OverviewScreen(MinerTableScreen):
     def visible_columns(self) -> tuple[str, ...]:
+        if (self.size.width or self.app.size.width) >= 120:
+            return ("State", "Miner", "TH/s", "ASIC", "VR", "MHz", "Thermal", "Pool")
         return ("State", "Miner", "TH/s", "ASIC", "Thermal")
+
     def compose(self) -> ComposeResult:
         yield Static("JORGE MINER DASHBOARD · READ ONLY", classes="app-title")
         yield Static("OVERVIEW", classes="screen-title")

@@ -4,7 +4,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import DataTable, Static
 
-from ..formatting import integer, is_offsite, is_online, number, text
+from ..formatting import integer, is_online, number, text
 
 
 class MinerTableScreen(Screen):
@@ -53,15 +53,15 @@ class MinerTableScreen(Screen):
         return tuple(columns)
 
     def row_values(self, miner: dict) -> dict[str, str]:
-        offsite = is_offsite(miner)
         remote_telemetry = miner.get("telemetry_source") == "BRAIINS"
         unmanaged = miner.get("management") == "UNMANAGED"
-        state = (
-            "[cyan]● OFF-SITE[/]" if is_online(miner) else "[dim]● REMOTE IDLE[/]"
-        ) if offsite else ("[green]● ON[/]" if is_online(miner) else "[red]● OFF[/]")
+        state = "[green]● ON[/]" if is_online(miner) else "[red]● OFF[/]"
         return {
             "State": state,
             "Miner": text(miner.get("name")),
+            "Location": text(miner.get("location_scope")),
+            "Source": text(miner.get("telemetry_source")),
+            "Management": text(miner.get("management")),
             "TH/s": number(miner.get("th"), 2),
             "ASIC": "—" if remote_telemetry else number(miner.get("temp"), 1, "°"),
             "VR": "—" if remote_telemetry else (number(miner.get("vr_temp"), 1, "°") if miner.get("vr_temp") not in (-1, "-1") else "—"),
@@ -89,7 +89,9 @@ class MinerTableScreen(Screen):
         columns = self.visible_columns()
         table.clear(columns=columns != self._column_signature)
         if columns != self._column_signature:
-            table.add_columns(*columns)
+            widths = self.column_widths(columns)
+            for column in columns:
+                table.add_column(column, width=widths.get(column))
             self._column_signature = columns
         miners = self.snapshot.get("miners", [])
         miners = miners if isinstance(miners, list) else []
@@ -104,6 +106,17 @@ class MinerTableScreen(Screen):
                 target_row = index
         if target_row is not None:
             table.move_cursor(row=target_row)
+
+    def column_widths(self, columns: tuple[str, ...]) -> dict[str, int]:
+        widths = {
+            "State": 8, "Miner": 18, "Location": 10, "Source": 10,
+            "Management": 11, "TH/s": 8, "ASIC": 7, "VR": 7, "MHz": 7,
+            "mV": 7, "Reject": 8, "Thermal": 13, "Pool": 15,
+        }
+        if "Miner" in columns:
+            used = sum(widths.get(column, len(column) + 2) for column in columns)
+            widths["Miner"] += min(16, max(0, (self.size.width or self.app.size.width) - used - 6))
+        return widths
 
     def action_cursor_down(self) -> None:
         self.table.action_cursor_down()

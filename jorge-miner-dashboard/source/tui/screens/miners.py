@@ -11,6 +11,15 @@ from .base import MinerTableScreen
 
 
 class MinersScreen(MinerTableScreen):
+    def visible_columns(self) -> tuple[str, ...]:
+        width = self.size.width or self.app.size.width
+        if width >= 145:
+            return (
+                "State", "Miner", "Location", "Source", "Management", "TH/s",
+                "ASIC", "VR", "MHz", "mV", "Reject", "Thermal", "Pool",
+            )
+        return super().visible_columns()
+
     def compose(self) -> ComposeResult:
         yield Static("JORGE MINER DASHBOARD · READ ONLY", classes="app-title")
         yield Static("MINERS", classes="screen-title")

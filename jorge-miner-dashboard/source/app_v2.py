@@ -66,7 +66,7 @@ BENCHMARK_REPORT_RETENTION_DAYS = 7
 THERMAL_LOCKS_PATH = DATA_DIR / "thermal_locks.json"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
-APP_VERSION = os.environ.get("APP_VERSION", "1.2.26")
+APP_VERSION = os.environ.get("APP_VERSION", "1.2.27")
 BTC_BLOCKS_DB = Path(
     os.environ.get("PUBLIC_POOL_DB_PATH", "/public-pool/public-pool.sqlite")
 )

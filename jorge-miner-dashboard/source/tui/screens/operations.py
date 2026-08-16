@@ -6,7 +6,7 @@ from datetime import datetime
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Grid, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import DataTable, Static
 
@@ -52,6 +52,10 @@ class SnapshotScreen(Screen):
     def render_snapshot(self, snapshot: dict) -> None:
         pass
 
+    def on_resize(self) -> None:
+        if self.is_mounted:
+            self.call_after_refresh(self.render_snapshot, getattr(self.app, "snapshot", {}))
+
     def chrome(self, title: str, subtitle: str) -> ComposeResult:
         yield Static("JORGE MINER DASHBOARD · READ ONLY", classes="app-title")
         yield Static(title, classes="screen-title")
@@ -77,7 +81,11 @@ class PerformanceScreen(SnapshotScreen):
         columns = ("Miner", "Now TH/s", "60m", "12h", "24h", "ASIC/VR", "MHz")
         if self.size.width < 100:
             columns = tuple(item for item in columns if item not in ("24h", "MHz"))
-        table.add_columns(*columns)
+        widths = {"Miner": 22, "Now TH/s": 11, "60m": 10, "12h": 10, "24h": 10, "ASIC/VR": 14, "MHz": 9}
+        if self.size.width >= 120:
+            widths["Miner"] += min(18, self.size.width - 120)
+        for column in columns:
+            table.add_column(column, width=widths[column])
         table.zebra_stripes = True
         for item in perf:
             name = str(item.get("name", ""))
@@ -115,7 +123,16 @@ class ThermalScreen(SnapshotScreen):
         columns = ("Miner", "Control", "Now °C", "Now MHz", "Status", "Base", "Hot", "Critical", "Recover/Warn/Crit", "Base/Hot/Crit mV")
         if self.size.width < 105:
             columns = tuple(item for item in columns if item not in ("Base/Hot/Crit mV", "Now MHz"))
-        table.add_columns(*columns)
+        widths = {
+            "Miner": 20, "Control": 11, "Now °C": 9, "Now MHz": 10, "Status": 15,
+            "Base": 8, "Hot": 8, "Critical": 10, "Recover/Warn/Crit": 19,
+            "Base/Hot/Crit mV": 19,
+        }
+        if self.size.width >= 130:
+            widths["Miner"] += min(14, self.size.width - 130)
+            widths["Status"] += min(10, max(0, self.size.width - 144))
+        for column in columns:
+            table.add_column(column, width=widths[column])
         table.zebra_stripes = True
         for item in configured:
             values = {
@@ -216,14 +233,16 @@ class EventsScreen(SnapshotScreen):
         events = rows(nested(snapshot, "events_data").get("events", []))
         table = self.query_one("#events-table", DataTable)
         table.clear(columns=True)
-        table.add_columns("Time", "State", "Miner", "Event")
+        event_width = max(28, (self.size.width or self.app.size.width) - 52)
+        for label, width in (("Time", 18), ("State", 13), ("Miner", 15), ("Event", event_width)):
+            table.add_column(label, width=width)
         table.zebra_stripes = True
         table.cursor_type = "row"
         for event in events:
             state = str(event.get("state", "STABLE")).upper()
             styled = f"[red]{state}[/]" if state in ("OFFLINE", "MAX COOLING") else f"[yellow]{state}[/]" if state == "COOLING" else f"[cyan]{state}[/]" if state == "BENCHMARK" else f"[green]{state}[/]"
             message = text(event.get("message"))
-            table.add_row(text(event.get("time")), styled, text(event.get("miner")), message[:64], key=str(len(table.rows)))
+            table.add_row(text(event.get("time")), styled, text(event.get("miner")), message[:event_width], key=str(len(table.rows)))
         if not events:
             table.add_row("—", "[dim]STABLE[/]", "—", "No recent operational transitions")
         self._events = events
@@ -280,7 +299,10 @@ class SystemScreen(SnapshotScreen):
     def compose(self) -> ComposeResult:
         yield from self.chrome("SYSTEM", "Jorge Miner Dashboard application health and diagnostics")
         with VerticalScroll(classes="content-scroll"):
-            yield Static("Diagnostics: —", id="system-content", classes="section")
+            with Grid(id="system-panels"):
+                yield Static("APPLICATION\nDiagnostics: —", id="system-application", classes="section")
+                yield Static("DATA\nDiagnostics: —", id="system-data", classes="section")
+                yield Static("STORAGE\nDiagnostics: —", id="system-storage", classes="section")
         yield Static(NAV, classes="nav-line")
         yield Static("API: connecting…", id="api-status")
 
@@ -292,18 +314,23 @@ class SystemScreen(SnapshotScreen):
         history = nested(diagnostics, "history")
         freshness = number(diagnostics.get("snapshot_age_seconds"), 0, "s")
         api = "[red]OFFLINE[/]" if getattr(self.app, "last_error", None) else "[green]● ONLINE[/]"
-        self.query_one("#system-content", Static).update(
+        self.query_one("#system-panels", Grid).set_class(self.size.width >= 110, "wide")
+        self.query_one("#system-application", Static).update(
             "[bold]APPLICATION[/]\n"
             f"Dashboard API          {api}\n"
             f"Thermal Service        {'[green]● ONLINE[/]' if system.get('thermal_management') else '[red]● OFFLINE[/]'}\n"
             f"History / Logging      {'[green]● ONLINE[/]' if system.get('miner_logging') else '[red]● OFFLINE[/]'}\n"
             f"Data Freshness         {freshness}\nUptime                 {duration(diagnostics.get('uptime_seconds'))}\n"
-            f"Version                {text(diagnostics.get('version'))}\n\n"
+            f"Version                {text(diagnostics.get('version'))}"
+        )
+        self.query_one("#system-data", Static).update(
             "[bold]DATA[/]\n"
             f"Last Miner Update      {timestamp(diagnostics.get('snapshot_updated'))}\n"
             f"Last Thermal Update    {timestamp(thermal.get('updated') or thermal.get('updated_epoch'))}\n"
             f"Last History Write     {timestamp(history.get('updated') or history.get('updated_epoch'))}\n"
-            f"API Response           {number(snapshot.get('api_response_ms'), 1, ' ms')}\n\n"
+            f"API Response           {number(snapshot.get('api_response_ms'), 1, ' ms')}"
+        )
+        self.query_one("#system-storage", Static).update(
             "[bold]STORAGE · APP DATA ONLY[/]\n"
             f"History Data           {bytes_size(storage.get('history_bytes'))}\n"
             f"Thermal Log            {bytes_size(storage.get('thermal_log_bytes'))}\n"
