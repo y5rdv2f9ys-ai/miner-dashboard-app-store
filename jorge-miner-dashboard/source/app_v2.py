@@ -66,7 +66,7 @@ BENCHMARK_REPORT_RETENTION_DAYS = 7
 THERMAL_LOCKS_PATH = DATA_DIR / "thermal_locks.json"
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
-APP_VERSION = os.environ.get("APP_VERSION", "1.2.25")
+APP_VERSION = os.environ.get("APP_VERSION", "1.2.26")
 BTC_BLOCKS_DB = Path(
     os.environ.get("PUBLIC_POOL_DB_PATH", "/public-pool/public-pool.sqlite")
 )
@@ -353,6 +353,31 @@ def discovery_display_name(item):
     identity = item.get("identity") or {}
     return identity.get("hostname") or identity.get("model") or f"Miner at {item.get('ip')}"
 
+def filter_configured_pending_discovery(pending, miners):
+    """Hide pending LAN devices already represented by configured Local API miners."""
+    local_api_miners = [
+        miner for miner in miners
+        if configured_miner(miner)["telemetry_source"] == "LOCAL_API"
+    ]
+    configured_macs = {
+        miner_identity_mac(miner) for miner in local_api_miners if miner_identity_mac(miner)
+    }
+    configured_by_ip = {
+        str(miner.get("ip") or "").strip(): miner
+        for miner in local_api_miners if str(miner.get("ip") or "").strip()
+    }
+    visible = []
+    for item in pending:
+        mac = miner_identity_mac(item)
+        if mac and mac in configured_macs:
+            continue
+        ip = str(item.get("ip") or "").strip()
+        configured = configured_by_ip.get(ip) if ip else None
+        if configured is not None and (not mac or not miner_identity_mac(configured)):
+            continue
+        visible.append(item)
+    return visible
+
 def reconcile_discovered_miners(discovered):
     updates = []
     known = []
@@ -572,6 +597,7 @@ def validate_miner_identity(data, existing_name=None):
 def miner_management_payload():
     with CONFIG_LOCK:
         miners = [configured_miner(miner) for miner in load_miners()]
+    pending = filter_configured_pending_discovery(load_pending_discovery(), miners)
     braiins = fetch_braiins_stats()
     adopted = {miner["worker_name"].casefold() for miner in miners
                if miner.get("telemetry_source") == "BRAIINS" or miner.get("pool") == "Braiins"}
@@ -579,7 +605,7 @@ def miner_management_payload():
                  if str(worker.get("name", "")).strip().casefold() not in adopted]
 
     return {
-        "pending": load_pending_discovery(),
+        "pending": pending,
         "miners": [
             {
                 "name": miner.get("name", ""),

@@ -697,7 +697,7 @@ class TUITests(unittest.IsolatedAsyncioTestCase):
 
     def test_diagnostics_version_and_timezone_aware_timestamps(self):
         diagnostics = app_v2.application_diagnostics({"updated_epoch": 1786459200, "updated": "ignored"})
-        self.assertEqual(diagnostics["version"], "1.2.25")
+        self.assertEqual(diagnostics["version"], "1.2.26")
         self.assertRegex(diagnostics["snapshot_updated"], r"-06:00$")
         self.assertIn("T", diagnostics["snapshot_updated"])
 

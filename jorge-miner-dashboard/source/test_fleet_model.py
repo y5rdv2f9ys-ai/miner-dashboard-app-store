@@ -13,6 +13,31 @@ def worker(name, rate=0, state="off"):
 
 
 class FleetSchemaTests(unittest.TestCase):
+    def test_pending_discovery_filters_configured_local_api_identity_only(self):
+        configured = [
+            {"name": "Bitaxe403", "ip": "192.168.1.20", "type": "axeos",
+             "enabled": False, "telemetry_source": "LOCAL_API",
+             "identity": {"mac": "20:6e:f1:9f:4b:00"}},
+            {"name": "NoMac", "ip": "192.168.1.21", "type": "axeos",
+             "telemetry_source": "LOCAL_API"},
+            {"name": "Remote", "ip": "", "telemetry_source": "BRAIINS",
+             "identity": {"mac": "aa:bb:cc:dd:ee:ff"}},
+        ]
+        pending = [
+            {"name": "Bitaxe403", "ip": "192.168.1.20",
+             "identity": {"mac": "20-6E-F1-9F-4B-00"}},
+            {"name": "IP fallback", "ip": "192.168.1.21", "identity": {}},
+            {"name": "Braiins collision", "ip": "192.168.1.22",
+             "identity": {"mac": "aa:bb:cc:dd:ee:ff"}},
+            {"name": "New miner", "ip": "192.168.1.23",
+             "identity": {"mac": "11:22:33:44:55:66"}},
+        ]
+
+        visible = app_v2.filter_configured_pending_discovery(pending, configured)
+
+        self.assertEqual([item["name"] for item in visible],
+                         ["Braiins collision", "New miner"])
+
     def test_legacy_defaults_are_local_api_and_worker_defaults_name(self):
         item = app_v2.configured_miner({"name": "Legacy", "pool": ""})
         self.assertEqual((item["location_scope"], item["telemetry_source"], item["worker_name"]),

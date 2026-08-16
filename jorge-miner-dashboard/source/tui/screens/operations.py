@@ -172,12 +172,17 @@ class PoolsScreen(SnapshotScreen):
             item_odds = nested(item, "odds")
             miners = ", ".join(str(x) for x in item.get("miners", []) if x) or "none"
             details.append(
-                f"[bold]{label}[/]  {number(item.get('hashrate_th'), 2)} TH/s  · miners {miners}\n"
-                f"  best session {difficulty(item.get('session_best'))}  historic {difficulty(item.get('historic_best'))}  "
-                f"network {difficulty(item_odds.get('difficulty'))}  best/net {number(item.get('best_network_pct'), 8, '%')}\n"
-                f"  odds daily {odds(item_odds.get('day_den'))}  monthly {odds(item_odds.get('month_den'))}"
+                f"[bold]{label}[/]\n"
+                f"  Hashrate       {number(item.get('hashrate_th'), 2)} TH/s\n"
+                f"  Assigned       {miners}\n"
+                f"  Best session   {difficulty(item.get('session_best'))}\n"
+                f"  Historic best  {difficulty(item.get('historic_best'))}\n"
+                f"  Network diff   {difficulty(item_odds.get('difficulty'))}\n"
+                f"  Best/network   {number(item.get('best_network_pct'), 8, '%')}\n"
+                f"  Daily odds     {odds(item_odds.get('day_den'))}\n"
+                f"  Monthly odds   {odds(item_odds.get('month_den'))}"
             )
-        self.query_one("#pool-details", Static).update("[bold]SOLO POOLS[/]\n" + "\n".join(details))
+        self.query_one("#pool-details", Static).update("[bold]SOLO POOLS[/]\n" + "\n\n".join(details))
         braiins = nested(data, "braiins")
         workers = rows(braiins.get("workers", []))
         worker_lines = [

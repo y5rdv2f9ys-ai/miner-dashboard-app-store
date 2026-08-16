@@ -4,16 +4,21 @@ set -eu
 use_sudo=0
 if docker ps >/dev/null 2>&1; then
     :
-elif command -v sudo >/dev/null 2>&1 && sudo -n docker ps >/dev/null 2>&1; then
-    use_sudo=1
+elif command -v sudo >/dev/null 2>&1; then
+    if sudo docker ps >/dev/null; then
+        use_sudo=1
+    else
+        echo "Cannot access Docker with sudo." >&2
+        exit 1
+    fi
 else
-    echo "Cannot access Docker. Run as a user with Docker access or passwordless sudo." >&2
+    echo "Cannot access Docker and sudo is unavailable." >&2
     exit 1
 fi
 
 docker_cli() {
     if [ "$use_sudo" -eq 1 ]; then
-        sudo -n docker "$@"
+        sudo docker "$@"
     else
         docker "$@"
     fi
@@ -36,6 +41,6 @@ else
 fi
 
 if [ "$use_sudo" -eq 1 ]; then
-    exec sudo -n docker exec "$exec_tty" "$container_id" miners-tui "$@"
+    exec sudo docker exec "$exec_tty" "$container_id" miners-tui "$@"
 fi
 exec docker exec "$exec_tty" "$container_id" miners-tui "$@"

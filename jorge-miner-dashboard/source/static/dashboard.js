@@ -136,17 +136,14 @@ function renderMinerDashboard(data) {
         const unmanaged = management === 'UNMANAGED';
         const thermalStatus = unmanaged ? 'UNMANAGED' : (miner.thermal_status || miner.status || '—');
         const hash = metricValue(miner.th, 2);
-        const inactive = offsite && !miner.online;
-        const state = offsite
-            ? (inactive ? 'OFF-SITE INACTIVE' : 'OFF-SITE')
-            : (miner.online ? '' : 'OFFLINE');
+        const inactive = !miner.online;
         const secondary = offsite
             ? (inactive ? 'Remote · inactive' : 'Remote · active')
             : '';
         const row = document.createElement('div');
         row.className = `live-fleet-row ${offsite ? 'is-offsite' : 'is-local'} ${inactive ? 'is-inactive' : ''} ${unmanaged ? 'is-unmanaged' : ''}`;
         row.innerHTML = `
-            <div class="fleet-state">${state ? escapeHtml(state) : '<span class="local-dot" title="Local and online">●</span>'}</div>
+            <div class="fleet-state"><span class="state-dot ${inactive ? 'is-offline' : 'is-online'}" title="${inactive ? 'Inactive' : 'Active'}">●</span></div>
             <div class="fleet-miner">${escapeHtml(miner.name)}${secondary ? `<small>${escapeHtml(secondary)}</small>` : ''}</div>
             <div class="fleet-hash"><b>${hash}</b><small> TH/s</small></div>
             <div class="fleet-asic">${remoteTelemetry ? '—' : metricValue(miner.temp, 1, '°')}</div>
