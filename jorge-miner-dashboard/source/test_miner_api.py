@@ -80,6 +80,41 @@ class MinerApiTests(unittest.TestCase):
         self.assertEqual(stats["freq"], 600)
         self.assertEqual(stats["volt"], 1150)
 
+    def test_normalized_stats_rejects_corrupt_axeos_domain_counters(self):
+        miner = {"type": "axeos", "ip": "192.0.2.85"}
+        info = {
+            "temp": 70.75,
+            "frequency": 675,
+            "coreVoltage": 1050,
+            "hashRate": 244139.6875,
+            "hashRate_1m": 294495.90625,
+            "expectedHashrate": 1377,
+            "hashrateMonitor": {"asics": [{
+                "domains": [353.046, 350.469, 227731.1875, 15657.733],
+            }]},
+        }
+        with patch.object(miner_api, "get_system_info", return_value=info):
+            stats = miner_api.normalized_stats(miner, timeout=3)
+
+        self.assertAlmostEqual(stats["th"], 1.40703, places=4)
+        self.assertEqual(miner_api.get_hashrate_th(stats), stats["th"])
+
+    def test_normalized_stats_keeps_zero_for_real_axeos_power_fault(self):
+        miner = {"type": "axeos", "ip": "192.0.2.66"}
+        info = {
+            "temp": 37,
+            "frequency": 550,
+            "coreVoltage": 950,
+            "hashRate": 0,
+            "hashRate_1m": 0,
+            "expectedHashrate": 1122,
+            "power_fault": "Power Fault Detected.",
+        }
+        with patch.object(miner_api, "get_system_info", return_value=info):
+            stats = miner_api.normalized_stats(miner, timeout=3)
+
+        self.assertEqual(stats["th"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

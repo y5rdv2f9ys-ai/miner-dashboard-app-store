@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Jorge Miner Dashboard
-version: "1.2.27"
+version: "1.2.28"
 tagline: Monitor and manage your Bitcoin mining fleet
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
