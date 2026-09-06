@@ -240,7 +240,7 @@ class EventsScreen(SnapshotScreen):
         table.cursor_type = "row"
         for event in events:
             state = str(event.get("state", "STABLE")).upper()
-            styled = f"[red]{state}[/]" if state in ("OFFLINE", "MAX COOLING") else f"[yellow]{state}[/]" if state == "COOLING" else f"[cyan]{state}[/]" if state == "BENCHMARK" else f"[green]{state}[/]"
+            styled = f"[red]{state}[/]" if state in ("OFFLINE", "MAX COOLING") else f"[yellow]{state}[/]" if state == "COOLING" else f"[green]{state}[/]"
             message = text(event.get("message"))
             table.add_row(text(event.get("time")), styled, text(event.get("miner")), message[:event_width], key=str(len(table.rows)))
         if not events:
@@ -334,5 +334,4 @@ class SystemScreen(SnapshotScreen):
             "[bold]STORAGE · APP DATA ONLY[/]\n"
             f"History Data           {bytes_size(storage.get('history_bytes'))}\n"
             f"Thermal Log            {bytes_size(storage.get('thermal_log_bytes'))}\n"
-            f"Benchmark Data         {bytes_size(storage.get('benchmark_bytes'))}"
         )

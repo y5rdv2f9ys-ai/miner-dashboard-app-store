@@ -93,7 +93,7 @@ class WebFleetTests(unittest.TestCase):
         self.assertIn("minmax(48px, auto)", solo_row)
         self.assertIn("column-gap: 10px", solo_row)
 
-    def test_management_and_benchmark_sources_remain_configured_local_only(self):
+    def test_management_sources_remain_configured_local_only(self):
         configured = [
             {"name": "Managed", "enabled": True, "ip": "10.0.0.1", "type": "axeos"},
             {"name": "Bitaxe403", "enabled": False, "ip": "10.0.0.2", "type": "axeos"},
@@ -101,15 +101,6 @@ class WebFleetTests(unittest.TestCase):
         with patch.object(app_v2, "load_miners", return_value=configured):
             payload = app_v2.miner_management_payload()
             self.assertEqual([item["name"] for item in payload["miners"]], ["Managed", "Bitaxe403"])
-            self.assertTrue(app_v2.find_configured_miner("Managed")["enabled"])
-            self.assertFalse(app_v2.find_configured_miner("Bitaxe403")["enabled"])
-            with self.assertRaises(LookupError):
-                app_v2.find_configured_miner("Remote-S21")
-
-    def test_ambiguous_configured_benchmark_name_is_rejected(self):
-        with patch.object(app_v2, "load_miners", return_value=[{"name": "Duplicate"}, {"name": "Duplicate"}]):
-            with self.assertRaises(LookupError):
-                app_v2.find_configured_miner("Duplicate")
 
     def test_management_ui_exposes_capabilities_and_canonical_pool_selector(self):
         html = (self.static / "miners.html").read_text()

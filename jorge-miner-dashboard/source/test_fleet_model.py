@@ -129,15 +129,12 @@ class FleetNormalizationTests(unittest.TestCase):
         self.assertTrue(all(not m["online"] for m in fleet))
         self.assertTrue(all("braiins_worker" not in m for m in fleet))
 
-    def test_thermal_and_benchmark_capabilities_follow_telemetry(self):
+    def test_thermal_capabilities_follow_telemetry(self):
         rows = [
             {"location_scope": "LOCAL", "telemetry_source": "LOCAL_API", "management": "MANAGED", "thermal_status": "STABLE"},
             {"location_scope": "LOCAL", "telemetry_source": "BRAIINS", "management": "MANAGED", "thermal_status": "STABLE"},
         ]
         self.assertEqual(app_v2.thermal_state_counts(rows)["STABLE"], 1)
-        with patch.object(app_v2, "load_miners", return_value=[{"name": "Remote", "telemetry_source": "BRAIINS", "pool": "Braiins"}]):
-            with self.assertRaisesRegex(ValueError, "Local miner API"):
-                app_v2.find_configured_miner("Remote")
 
 
 class HistoryTests(unittest.TestCase):

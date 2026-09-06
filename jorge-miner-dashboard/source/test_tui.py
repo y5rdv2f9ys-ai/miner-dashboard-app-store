@@ -175,8 +175,7 @@ class BackendSummaryTests(unittest.TestCase):
                       "hot_freq": 525, "critical_freq": 500}
         telemetry = {"temp": 69.2, "vr_temp": 64.8, "freq": 490, "volt": 1120,
                      "th": .82, "reject": .31, "bestSessionDiff": 0, "bestDiff": 0}
-        with patch.object(app_v2, "normalized_stats", return_value=telemetry), \
-             patch.object(app_v2, "benchmark_status_active", return_value=True):
+        with patch.object(app_v2, "normalized_stats", return_value=telemetry):
             result = app_v2.read_miner(configured)
         self.assertEqual(result["status"], "UNMANAGED")
         self.assertEqual(result["thermal_status"], "UNMANAGED")
@@ -338,7 +337,7 @@ class BackendSummaryTests(unittest.TestCase):
             {"location_scope": "OFF-SITE", "management": "UNMANAGED", "thermal_status": "COOLING"},
         ]
         self.assertEqual(app_v2.thermal_state_counts(miners), {
-            "STABLE": 1, "HOLDING": 0, "COOLING": 0, "MAX COOLING": 0, "BENCHMARK": 1,
+            "STABLE": 1, "HOLDING": 0, "COOLING": 0, "MAX COOLING": 0,
         })
 
     def test_pool_payload_marks_local_and_offsite_workers_without_double_count(self):
@@ -509,7 +508,7 @@ NQaxe | SKIP thermal lock (benchmark:bench_001)
             path.open.return_value.__enter__.return_value = io.BytesIO(content)
             events = app_v2.recent_thermal_events(20)
         self.assertEqual([event["state"] for event in events],
-                         ["BENCHMARK", "OFFLINE", "STABLE", "MAX COOLING", "COOLING"])
+                         ["OFFLINE", "STABLE", "MAX COOLING", "COOLING"])
         self.assertEqual(events[0]["time"], "20:02")
         self.assertEqual(sum(event["state"] == "COOLING" for event in events), 1)
         self.assertFalse(any(event["miner"] == "AvalonQ" for event in events))
@@ -679,6 +678,15 @@ class TUITests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("UNMANAGED", row)
             self.assertGreaterEqual(row.count("—"), 5)
 
+    async def test_system_storage_omits_removed_benchmark_data(self):
+        app = MinerDashboardApp(FakeClient(), enable_periodic_refresh=False, threaded_requests=False)
+        async with app.run_test(size=(120, 35)) as pilot:
+            await pilot.press("7")
+            storage = str(app.screen.query_one("#system-storage", Static).render())
+            self.assertIn("History Data", storage)
+            self.assertIn("Thermal Log", storage)
+            self.assertNotIn("Benchmark", storage)
+
     async def test_events_use_operational_states_and_detail(self):
         snapshot = dict(SNAPSHOT)
         snapshot["events_data"] = {"events": [
@@ -697,7 +705,7 @@ class TUITests(unittest.IsolatedAsyncioTestCase):
 
     def test_diagnostics_version_and_timezone_aware_timestamps(self):
         diagnostics = app_v2.application_diagnostics({"updated_epoch": 1786459200, "updated": "ignored"})
-        self.assertEqual(diagnostics["version"], "1.2.28")
+        self.assertEqual(diagnostics["version"], "1.2.29")
         self.assertRegex(diagnostics["snapshot_updated"], r"-06:00$")
         self.assertIn("T", diagnostics["snapshot_updated"])
 

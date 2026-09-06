@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Jorge Miner Dashboard
-version: "1.2.28"
+version: "1.2.29"
 tagline: Monitor and manage your Bitcoin mining fleet
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
@@ -25,4 +25,6 @@ torOnly: false
 submitter: Jorge
 submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 releaseNotes: >-
-  Ensures Bitaxe 403 BM1368 identity selects its dedicated benchmark profile.
+  Removes Dashboard Benchmark functionality while preserving shared thermal control and locks.
+  Compacts the Page 1 mobile header and improves Page 2 mobile table readability,
+  keeping hashrate and frequency columns separate.

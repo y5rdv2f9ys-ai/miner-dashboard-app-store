@@ -292,13 +292,12 @@ async function loadPerformance() {
     });
 
     const snapshotCounts = latestThermalCounts;
-    const counts = {STABLE: 0, HOLDING: 0, COOLING: 0, 'MAX COOLING': 0, BENCHMARK: 0, ...snapshotCounts};
+    const counts = {STABLE: 0, HOLDING: 0, COOLING: 0, 'MAX COOLING': 0, ...snapshotCounts};
     el('thermalStrip').innerHTML =
         `<span class="stable">Stable ${counts.STABLE}</span>&nbsp;&nbsp;` +
         `<span class="holding">Holding ${counts.HOLDING}</span>&nbsp;&nbsp;` +
         `<span class="cooling">Cooling ${counts.COOLING}</span>&nbsp;&nbsp;` +
-        `<span class="maxcool">Max ${counts['MAX COOLING']}</span>&nbsp;&nbsp;` +
-        `<span class="benchmark">Benchmark ${counts.BENCHMARK}</span>`;
+        `<span class="maxcool">Max ${counts['MAX COOLING']}</span>`;
     setText('perfUpdated', `Updated: ${data.updated} · rolling averages`);
 }
 
