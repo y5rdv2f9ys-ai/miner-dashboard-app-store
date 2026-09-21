@@ -52,7 +52,7 @@ PAGE3_PUBLIC_TOKEN_PATH = DATA_DIR / ".page3_public_token"
 PAGE3_PUBLIC_PATHS = {"/public/page3", "/public/page3-data"}
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
-APP_VERSION = os.environ.get("APP_VERSION", "1.2.29")
+APP_VERSION = os.environ.get("APP_VERSION", "1.2.30")
 BTC_BLOCKS_DB = Path(
     os.environ.get("PUBLIC_POOL_DB_PATH", "/public-pool/public-pool.sqlite")
 )
@@ -490,7 +490,7 @@ DEFAULT_THERMAL_SETTINGS = {
 
 LOCATION_SCOPES = ("LOCAL", "OFF-SITE")
 TELEMETRY_SOURCES = ("LOCAL_API", "BRAIINS")
-POOL_COINS = {"Braiins": "BTC", "Umbrel Solo": "BTC", "BCH SoloPool": "BCH"}
+POOL_COINS = {"Braiins": "BTC", "Umbrel Solo": "BTC", "BCH SoloPool": "BCH", "DGB SHA-256d": "DGB"}
 
 def configured_miner(miner):
     """Return a backward-compatible configured identity without mutating disk."""
@@ -531,7 +531,7 @@ def validate_miner_identity(data, existing_name=None):
 
     pool = str(data.get("pool") or "").strip()
     if pool not in POOL_COINS:
-        raise ValueError("Pool must be Braiins, Umbrel Solo, or BCH SoloPool")
+        raise ValueError("Pool must be Braiins, Umbrel Solo, BCH SoloPool, or DGB SHA-256d")
     coin = POOL_COINS[pool]
 
     miner_type = str(data.get("type") or "").strip().lower()
@@ -1518,7 +1518,48 @@ def fetch_json_url(url, timeout=5):
     except:
         return None
 
+DGB_DIFFICULTY_URL = "https://digihash.digibyte.io/api/stats"
+DGB_NETWORK_CACHE = {"timestamp": None, "difficulty": None}
+
+
+def get_dgb_difficulty():
+    """Only accept fresh, explicitly identified DigiByte SHA-256d network data."""
+    now = time.time()
+    cached_at = DGB_NETWORK_CACHE["timestamp"]
+    if cached_at is not None and 0 <= now - cached_at < POOL_CACHE_SECONDS:
+        return DGB_NETWORK_CACHE["difficulty"]
+    difficulty = None
+    data = fetch_json_url(DGB_DIFFICULTY_URL)
+    try:
+        pool = data["pools"]["digibyte-sha256"]
+        age = now - float(data["time"])
+        value = float(pool["poolStats"]["networkDiff"])
+        if (pool["symbol"] == "DGB" and pool["algorithm"] == "sha256d"
+                and -60 <= age <= 600 and math.isfinite(value) and value > 0):
+            difficulty = value
+    except (KeyError, TypeError, ValueError, OverflowError):
+        pass
+    # Cache failures too; never preserve a stale successful value after failure.
+    DGB_NETWORK_CACHE.update(timestamp=now, difficulty=difficulty)
+    return difficulty
+
+
+def dgb_probability_for_hashrate(th, seconds, difficulty):
+    if difficulty is None:
+        return 0.0
+    if not all(math.isfinite(v) for v in (th, seconds, difficulty)):
+        return 0.0
+    if th <= 0 or seconds <= 0 or difficulty <= 0:
+        return 0.0
+    share = (th * 1e12 / difficulty / 4294967296) * 75
+    if share >= 1:
+        return 1.0
+    return -math.expm1((seconds / 75) * math.log1p(-share))
+
+
 def get_network_difficulty(coin):
+    if coin == "DGB":
+        return get_dgb_difficulty()
     now = time.time()
 
     if NETWORK_CACHE.get(coin) and now - NETWORK_CACHE["timestamp"] < 600:
@@ -1586,10 +1627,11 @@ def build_odds(miners, runs):
         th = pdata["th"]
         diff = get_network_difficulty(coin)
 
-        p_hour = probability_for_hashrate(th, 3600, diff)
-        p_day = probability_for_hashrate(th, 86400, diff)
-        p_month = probability_for_hashrate(th, 86400 * 30, diff)
-        p_year = probability_for_hashrate(th, 86400 * 365, diff)
+        probability = dgb_probability_for_hashrate if coin == "DGB" else probability_for_hashrate
+        p_hour = probability(th, 3600, diff)
+        p_day = probability(th, 86400, diff)
+        p_month = probability(th, 86400 * 30, diff)
+        p_year = probability(th, 86400 * 365, diff)
 
         run = runs.get(pool, {})
         th_seconds = float(run.get("th_seconds", 0))
@@ -1630,6 +1672,7 @@ def collect_dashboard_snapshot():
     solo_pools = {
         "Umbrel Solo": solo_pool_summary(fleet, "Umbrel Solo"),
         "BCH SoloPool": solo_pool_summary(fleet, "BCH SoloPool"),
+        "DGB SHA-256d": solo_pool_summary(fleet, "DGB SHA-256d"),
     }
 
     return {
@@ -1676,6 +1719,7 @@ def empty_dashboard_snapshot():
         "solo_pools": {
             "Umbrel Solo": solo_pool_summary([], "Umbrel Solo"),
             "BCH SoloPool": solo_pool_summary([], "BCH SoloPool"),
+            "DGB SHA-256d": solo_pool_summary([], "DGB SHA-256d"),
         },
         "braiins_workers": [],
         "health": dashboard_health([]),
@@ -1750,7 +1794,12 @@ def build_page3_payload(snapshot):
     btc_th = pool_hash(btc_miners)
     bch_th = pool_hash(bch_miners)
     braiins_th = pool_hash(braiins_miners)
-    total_th = btc_th + bch_th + braiins_th
+    dgb_miners = pool_miners("DGB SHA-256d")
+    dgb_summary = solo_pool_summary(miners, "DGB SHA-256d")
+    dgb_th = dgb_summary["current_hashrate_th"]
+    dgb_odds = odds_payload("DGB SHA-256d")
+    dgb_best = max_value(miner.get("best_diff") for miner in dgb_miners)
+    total_th = btc_th + bch_th + dgb_th + braiins_th
 
     def allocation_pct(value):
         return (value / total_th) * 100 if total_th > 0 else 0.0
@@ -1775,7 +1824,18 @@ def build_page3_payload(snapshot):
         "allocation": {
             "btc_solo_pct": allocation_pct(btc_th),
             "bch_solo_pct": allocation_pct(bch_th),
+            "dgb_solo_pct": allocation_pct(dgb_th),
             "braiins_pct": allocation_pct(braiins_th),
+        },
+        "dgb_solo": {
+            "pool": "DGB SHA-256d", "coin": "DGB", "hashrate_th": dgb_th,
+            "miners": [miner.get("name", "") for miner in dgb_miners],
+            "online_miners": [miner.get("name", "") for miner in dgb_miners if is_hashing(miner)],
+            **dgb_summary,
+            "session_best": max_value(miner.get("best_session_diff") for miner in dgb_miners),
+            "historic_best": dgb_best,
+            "best_network_pct": best_network_pct(dgb_best, dgb_odds["difficulty"]),
+            "odds": dgb_odds,
         },
         "btc_solo": {
             "pool": "Umbrel Solo",

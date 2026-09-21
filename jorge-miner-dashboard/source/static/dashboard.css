@@ -3730,3 +3730,50 @@ svg {
         padding-left: 4px;
     }
 }
+
+/* Compact stacked solo cards: assignments, best shares, network odds. */
+.solo-grid { grid-template-columns: minmax(0, 1fr); }
+.dgb-solo-card { border-color: rgba(56,189,248,.65); box-shadow: inset 0 0 20px rgba(56,189,248,.035); }
+.allocation-segment.dgb-solo { background: #38bdf8; }
+.dgb-label { color: #38bdf8; }
+.mining-page .solo-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, .9fr) minmax(0, 1fr);
+    grid-template-areas: "head best stats" "working best stats";
+    gap: 0 12px;
+    padding: 9px 12px;
+}
+.solo-card .solo-head { grid-area: head; }
+.solo-card .solo-working { grid-area: working; align-self: start; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.solo-card .diff-focus { grid-area: best; align-self: center; margin-top: 0; }
+.solo-card .solo-stats { grid-area: stats; align-self: center; margin-top: 0; grid-template-columns: minmax(0, 1fr); }
+.solo-card .solo-miner-row { min-height: 20px; }
+@media (max-width: 600px) {
+    .mining-page .solo-card {
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+        grid-template-areas: "head stats" "working stats" "best stats";
+        gap: 4px 9px;
+        padding: 7px 9px;
+    }
+    .solo-card .solo-head { flex-wrap: wrap; gap: 2px 6px; }
+    .solo-card .solo-head b, .solo-card .solo-head strong { font-size: 11px; }
+    .solo-card .diff-focus { gap: 3px; }
+    .solo-card .diff-focus > div { padding: 4px 2px; }
+    .solo-card .diff-focus b { font-size: 15px; }
+    .solo-card .diff-focus small { font-size: 6px; letter-spacing: 0; }
+    .solo-card .solo-stats { font-size: 8px; gap: 3px; }
+    .solo-card .solo-working { font-size: 8px; }
+    .solo-card .solo-miner-row { grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 5px; font-size: 8px; }
+    .allocation-legend { flex-wrap: wrap; }
+}
+.mining-page .solo-card { min-height: 0; }
+.mining-page .solo-card .diff-focus,
+.mining-page .solo-card .solo-stats { margin-top: 0; }
+.mining-page .solo-grid,
+.mining-page .braiins-panel { margin-top: 8px; }
+.mining-page .braiins-panel { min-height: 0; }
+
+/* Hidden destinations must not retain grid cells or allocation space. */
+.mining-page .solo-card[hidden],
+.mining-page .solo-grid[hidden],
+.mining-page .allocation-segment[hidden] { display: none; }

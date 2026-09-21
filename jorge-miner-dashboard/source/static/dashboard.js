@@ -181,11 +181,16 @@ function renderStrategy(data) {
     const btcTH = poolHash(miners, 'Umbrel Solo');
     const bchTH = poolHash(miners, 'BCH SoloPool');
     const braiinsTH = poolHash(miners, 'Braiins');
-    const total = btcTH + bchTH + braiinsTH;
+    const dgbMiners = poolMiners(miners, 'DGB SHA-256d');
+    const dgbTH = Number(data.solo_pools?.['DGB SHA-256d']?.current_hashrate_th || 0);
+    const total = btcTH + bchTH + dgbTH + braiinsTH;
     const pct = value => total ? (value / total) * 100 : 0;
     const odds = data.odds || {};
     const btcOdds = odds['Umbrel Solo'] || {};
     const bchOdds = odds['BCH SoloPool'] || {};
+    const dgbOdds = odds['DGB SHA-256d'] || {};
+    const dgbSessionBest = Math.max(...dgbMiners.map(m => m.best_session_diff || 0), 0);
+    const dgbHistoricBest = Math.max(...dgbMiners.map(m => m.best_diff || 0), 0);
     const braiins = data.braiins || {};
     const solo = data.solopool || {};
     const activeBraiinsWorkers = (data.braiins_workers || []).filter(
@@ -202,15 +207,27 @@ function renderStrategy(data) {
 
     setText('strategyUpdated', `Updated: ${data.updated}`);
     setText('strategyTotal', `${total.toFixed(2)} TH`);
-    el('allocBtc').style.width = `${pct(btcTH)}%`;
-    el('allocBch').style.width = `${pct(bchTH)}%`;
-    el('allocBraiins').style.width = `${pct(braiinsTH)}%`;
-    el('allocationLegend').innerHTML =
-        `<span class="btc-label">BTC Solo ${pct(btcTH).toFixed(1)}%</span>` +
-        `<span class="bch-label">BCH Solo ${pct(bchTH).toFixed(1)}%</span>` +
-        `<span class="braiins-label">Braiins ${pct(braiinsTH).toFixed(1)}%</span>`;
-
     const soloPools = data.solo_pools || {};
+    const destinations = [
+        {prefix: 'btc', id: 'allocBtc', label: 'BTC Solo', th: btcTH, summary: soloPools['Umbrel Solo']},
+        {prefix: 'bch', id: 'allocBch', label: 'BCH Solo', th: bchTH, summary: soloPools['BCH SoloPool']},
+        {prefix: 'dgb', id: 'allocDgb', label: 'DGB', th: dgbTH, summary: soloPools['DGB SHA-256d']},
+        {prefix: 'braiins', id: 'allocBraiins', label: 'Braiins', th: braiinsTH,
+            summary: {assigned_count: braiinsMiners.length}},
+    ];
+    const assignedDestinations = destinations.filter(destination => {
+        const summary = destination.summary || {};
+        const assigned = (summary.assigned_count ?? summary.assigned_miners?.length ?? 0) > 0;
+        const segment = el(destination.id);
+        segment.hidden = !assigned;
+        segment.style.width = `${pct(destination.th)}%`;
+        return assigned;
+    });
+    el('allocationLegend').innerHTML = assignedDestinations.map(destination =>
+        `<span class="${destination.prefix}-label">${destination.label} ${pct(destination.th).toFixed(1)}%</span>`
+    ).join('');
+    document.querySelector('.solo-grid').hidden = !assignedDestinations.some(destination => destination.prefix !== 'braiins');
+
     renderSoloAssignment('btc', soloPools['Umbrel Solo'] || {});
     setText('btcSessionBest', formatDifficulty(btcSessionBest));
     setText('btcHistoricBest', formatDifficulty(btcHistoricBest));
@@ -227,10 +244,16 @@ function renderStrategy(data) {
     setText('bchSoloDay', formatOddsDen(bchOdds.day_den));
     setText('bchSoloMonth', formatOddsDen(bchOdds.month_den));
 
+    renderSoloAssignment('dgb', soloPools['DGB SHA-256d'] || {});
+    setText('dgbSessionBest', dgbSessionBest > 0 ? formatDifficulty(dgbSessionBest) : '—');
+    setText('dgbHistoricBest', dgbHistoricBest > 0 ? formatDifficulty(dgbHistoricBest) : '—');
+    setText('dgbNetworkDiff', dgbOdds.difficulty > 0 ? formatDifficulty(dgbOdds.difficulty) : '—');
+    setText('dgbBestPct', dgbHistoricBest > 0 && dgbOdds.difficulty > 0 ? difficultyPct(dgbHistoricBest, dgbOdds.difficulty) : '—');
+    setText('dgbSoloDay', dgbOdds.day_den > 0 ? formatOddsDen(dgbOdds.day_den) : '—');
+    setText('dgbSoloMonth', dgbOdds.month_den > 0 ? formatOddsDen(dgbOdds.month_den) : '—');
+
     setText('braiinsHash', `${braiinsTH.toFixed(2)} TH`);
     setText('braiins60m', `${Number(braiins.hash_rate_60m_th || 0).toFixed(2)} TH`);
-    setText('braiinsToday', compactBtc(braiins.today_reward));
-    setText('braiinsBalance', compactBtc(braiins.current_balance));
 
     const workerList = el('braiinsWorkerList');
     const workers = activeBraiinsWorkers.sort((a, b) => b.hash_rate_5m_th - a.hash_rate_5m_th);
@@ -249,14 +272,13 @@ function renderSoloAssignment(prefix, summary) {
     const activeCount = summary.active_count ?? 0;
     const assignedCount = summary.assigned_count ?? miners.length;
     setText(`${prefix}SoloHash`, `${Number(summary.current_hashrate_th || 0).toFixed(2)} TH`);
-    setText(`${prefix}SoloMiners`, `${activeCount}/${assignedCount} active · ${assignedCount} assigned`);
-    const list = el(`${prefix}SoloMinerList`);
-    list.innerHTML = miners.length ? miners.map(miner => `
-        <div class="solo-miner-row">
-            <span>${escapeHtml(miner.name)}</span>
-            <small class="${miner.active ? 'active' : 'offline'}">${miner.active ? 'ACTIVE' : 'OFFLINE'}</small>
-            <b>${Number(miner.hashrate_th || 0).toFixed(2)} TH</b>
-        </div>`).join('') : '<div class="solo-empty">No assigned miners</div>';
+    const allWorking = assignedCount > 0 && activeCount === assignedCount;
+    const count = allWorking ? `${activeCount}` : `${activeCount} OF ${assignedCount}`;
+    const noun = assignedCount === 1 ? 'MINER' : 'MINERS';
+    const status = el(`${prefix}SoloMiners`);
+    status.closest('.solo-card').hidden = assignedCount === 0;
+    status.className = `solo-working ${activeCount === 0 ? 'red-text' : onlineColorClass(activeCount, assignedCount)}`;
+    status.textContent = `● ${count} ${noun} WORKING`;
 }
 
 function fmt(value, decimals, suffix) {

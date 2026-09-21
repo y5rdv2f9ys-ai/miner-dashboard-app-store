@@ -53,14 +53,18 @@ class WebFleetTests(unittest.TestCase):
         self.assertIn(".fleet-vr", mobile_rule)
         self.assertIn(".fleet-mhz", mobile_rule)
 
-    def test_dashboard_has_offsite_styles_and_solo_assignment_rows(self):
+    def test_dashboard_has_offsite_styles_and_solo_working_summaries(self):
         css = (self.static / "dashboard.css").read_text()
         html = (self.static / "dashboard.html").read_text()
         script = (self.static / "dashboard.js").read_text()
         self.assertIn(".status.OFF-SITE", css)
         self.assertIn(".status.OFF-SITE-INACTIVE", css)
-        self.assertIn('id="btcSoloMinerList"', html)
-        self.assertIn('id="bchSoloMinerList"', html)
+        for prefix in ("btc", "bch", "dgb"):
+            self.assertIn(f'id="{prefix}SoloMiners"', html)
+            self.assertNotIn(f'id="{prefix}SoloMinerList"', html)
+        self.assertNotIn('id="braiinsToday"', html)
+        self.assertNotIn('id="braiinsBalance"', html)
+        self.assertIn('id="braiinsWorkerList"', html)
         self.assertIn("renderSoloAssignment", script)
         self.assertIn("data.braiins_workers", script)
         self.assertNotIn("braiins.workers || []", script)

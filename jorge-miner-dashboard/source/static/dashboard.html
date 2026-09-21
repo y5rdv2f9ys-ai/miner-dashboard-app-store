@@ -91,6 +91,7 @@
         <div class="allocation-bar">
             <div class="allocation-segment btc-solo" id="allocBtc"></div>
             <div class="allocation-segment bch-solo" id="allocBch"></div>
+            <div class="allocation-segment dgb-solo" id="allocDgb"></div>
             <div class="allocation-segment braiins" id="allocBraiins"></div>
         </div>
         <div class="allocation-legend" id="allocationLegend"></div>
@@ -99,10 +100,10 @@
     <div class="solo-grid">
         <div class="solo-card btc-solo-card">
             <div class="solo-head">
-                <div><span class="status-dot"></span><b>BTC SOLO</b><small id="btcSoloMiners">--</small></div>
+                <div><span class="status-dot"></span><b>BTC SOLO</b></div>
                 <strong id="btcSoloHash">-- TH</strong>
             </div>
-            <div class="solo-miner-list" id="btcSoloMinerList"></div>
+            <div class="solo-working" id="btcSoloMiners" aria-live="polite">—</div>
             <div class="diff-focus">
                 <div><small>SESSION BEST</small><b id="btcSessionBest">--</b></div>
                 <div><small>HISTORIC BEST</small><b id="btcHistoricBest">--</b></div>
@@ -117,10 +118,10 @@
 
         <div class="solo-card bch-solo-card">
             <div class="solo-head">
-                <div><span class="status-dot"></span><b>BCH SOLO</b><small id="bchSoloMiners">--</small></div>
+                <div><span class="status-dot"></span><b>BCH SOLO</b></div>
                 <strong id="bchSoloHash">-- TH</strong>
             </div>
-            <div class="solo-miner-list" id="bchSoloMinerList"></div>
+            <div class="solo-working" id="bchSoloMiners" aria-live="polite">—</div>
             <div class="diff-focus">
                 <div><small>SESSION BEST</small><b id="bchSessionBest">--</b></div>
                 <div><small>HISTORIC BEST</small><b id="bchHistoricBest">--</b></div>
@@ -132,14 +133,29 @@
                 <span>Month <b id="bchSoloMonth">--</b></span>
             </div>
         </div>
+        <div class="solo-card dgb-solo-card">
+            <div class="solo-head">
+                <div><span class="status-dot"></span><b>DGB SHA-256d</b></div>
+                <strong id="dgbSoloHash">-- TH</strong>
+            </div>
+            <div class="solo-working" id="dgbSoloMiners" aria-live="polite">—</div>
+            <div class="diff-focus">
+                <div><small>SESSION BEST</small><b id="dgbSessionBest">--</b></div>
+                <div><small>HISTORIC BEST</small><b id="dgbHistoricBest">--</b></div>
+            </div>
+            <div class="solo-stats">
+                <span>Network <b id="dgbNetworkDiff">--</b></span>
+                <span>Best / network <b id="dgbBestPct">--</b></span>
+                <span>Day <b id="dgbSoloDay">--</b></span>
+                <span>Month <b id="dgbSoloMonth">--</b></span>
+            </div>
+        </div>
     </div>
 
     <div class="braiins-panel">
         <div class="braiins-summary">
             <div><small>BRAIINS FPPS</small><b id="braiinsHash">-- TH</b></div>
             <div><small>POOL 60M</small><b id="braiins60m">-- TH</b></div>
-            <div><small>TODAY</small><b id="braiinsToday">-- BTC</b></div>
-            <div><small>BALANCE</small><b id="braiinsBalance">-- BTC</b></div>
         </div>
         <div class="braiins-workers" id="braiinsWorkerList">Loading workers...</div>
     </div>

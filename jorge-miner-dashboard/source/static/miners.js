@@ -59,6 +59,7 @@ function capabilityFields(miner = {}) {
             <option value="Braiins" ${selected(miner.pool, 'Braiins')}>Braiins</option>
             <option value="Umbrel Solo" ${selected(miner.pool, 'Umbrel Solo')}>BTC Solo</option>
             <option value="BCH SoloPool" ${selected(miner.pool, 'BCH SoloPool')}>BCH Solo</option>
+            <option value="DGB SHA-256d" ${selected(miner.pool, 'DGB SHA-256d')}>DGB SHA-256d</option>
         </select></label>
         <label class="braiins-field" ${source === 'BRAIINS' ? '' : 'hidden'}>Braiins worker name
             <input name="worker_name" type="text" maxlength="48" value="${escapeHtml(miner.worker_name || miner.name || '')}">
