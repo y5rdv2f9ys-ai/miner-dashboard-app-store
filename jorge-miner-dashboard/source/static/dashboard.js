@@ -356,6 +356,49 @@ async function sendDiscordTest() {
     }
 }
 
+async function loadDgbRecoverySetting() {
+    const control = el('dgbRecoveryEnabled');
+    try {
+        const response = await fetch('/api/dgb-recovery', {cache: 'no-store'});
+        if (!response.ok) throw new Error('Setting unavailable');
+        const data = await response.json();
+        if (typeof data.enabled !== 'boolean') throw new Error('Invalid setting');
+        control.checked = data.enabled === true;
+        control.indeterminate = false;
+        control.disabled = false;
+        setText('dgbRecoveryState', control.checked ? 'Enabled' : 'Disabled');
+        return true;
+    } catch (error) {
+        control.indeterminate = true;
+        control.disabled = true;
+        setText('dgbRecoveryState', 'Unknown');
+        return false;
+    }
+}
+
+el('dgbRecoveryEnabled').addEventListener('change', async event => {
+    const control = event.currentTarget;
+    const enabled = control.checked;
+    control.disabled = true;
+    try {
+        const response = await fetch('/api/dgb-recovery', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled}),
+        });
+        if (!response.ok) throw new Error('Could not save setting');
+        const data = await response.json();
+        if (typeof data.enabled !== 'boolean') throw new Error('Invalid setting');
+        control.checked = data.enabled;
+        control.indeterminate = false;
+        setText('dgbRecoveryState', data.enabled ? 'Enabled' : 'Disabled');
+    } catch (error) {
+        await loadDgbRecoverySetting();
+    } finally {
+        if (!control.indeterminate) control.disabled = false;
+    }
+});
+
 async function loadData() {
     const response = await fetch('/api/miners');
     if (!response.ok) throw new Error(`Dashboard API returned ${response.status}`);
@@ -376,4 +419,5 @@ swipe.addEventListener('scroll', () => {
 });
 
 loadData().catch(error => console.error('Dashboard refresh failed:', error));
+loadDgbRecoverySetting();
 setInterval(() => loadData().catch(error => console.error('Dashboard refresh failed:', error)), 10000);

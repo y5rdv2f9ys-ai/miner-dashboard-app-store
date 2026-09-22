@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Jorge Miner Dashboard
-version: "1.2.30"
+version: "1.2.31"
 tagline: Monitor and manage your Bitcoin mining fleet
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
@@ -25,7 +25,5 @@ torOnly: false
 submitter: Jorge
 submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 releaseNotes: >-
-  Adds manual DigiByte SHA-256d assignment with algorithm-specific difficulty and mining odds.
-  Compacts the Mining overview with working-miner summaries and assignment-based solo-card
-  and allocation visibility. Keeps the Braiins worker list while removing payment metrics
-  from the Mining page.
+  Adds optional DGB Automatic Recovery for AxeDGB Core pauses caused by an unclean exit.
+  Recovery is disabled by default and uses a restricted, authenticated local bridge.

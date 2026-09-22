@@ -9,6 +9,7 @@ function dashboard() {
     const node = id => {
         if (!nodes.has(id)) nodes.set(id, {
             hidden: false, style: {}, textContent: '', innerHTML: '',
+            addEventListener: () => {},
             closest: () => node(id + '-card'),
         });
         return nodes.get(id);

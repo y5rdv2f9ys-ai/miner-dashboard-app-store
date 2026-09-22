@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -52,7 +53,14 @@ PAGE3_PUBLIC_TOKEN_PATH = DATA_DIR / ".page3_public_token"
 PAGE3_PUBLIC_PATHS = {"/public/page3", "/public/page3-data"}
 MANUAL_RESET_PATH = DATA_DIR / "manual_reset_marker"
 THERMAL_HEARTBEAT_PATH = DATA_DIR / "thermal_heartbeat"
-APP_VERSION = os.environ.get("APP_VERSION", "1.2.30")
+DGB_RECOVERY_SETTINGS_PATH = DATA_DIR / "dgb_recovery_settings.json"
+DGB_RECOVERY_TOKEN_PATH = DATA_DIR / ".dgb_recovery_bridge_token"
+DGB_RECOVERY_BRIDGE_URL = "http://127.0.0.1:5058"
+DGB_RECOVERY_INTERVAL = 30
+DGB_RECOVERY_COOLDOWN = 300
+DGB_RECOVERY_LAST_ATTEMPT = {}
+DGB_RECOVERY_COMPLETED = set()
+APP_VERSION = os.environ.get("APP_VERSION", "1.2.31")
 BTC_BLOCKS_DB = Path(
     os.environ.get("PUBLIC_POOL_DB_PATH", "/public-pool/public-pool.sqlite")
 )
@@ -1057,7 +1065,9 @@ def recent_thermal_events(limit=100, max_bytes=65536):
         event_upper = raw_event.upper()
         state = None
         description = raw_event
-        if "ERROR READING STATS" in event_upper or "MINER UNREACHABLE" in event_upper:
+        if miner == "DGB Core" and raw_event == "AUTO RESUMED AFTER UNCLEAN SHUTDOWN":
+            state, description = "RECOVERED", "DGB Core automatically resumed after unclean shutdown"
+        elif "ERROR READING STATS" in event_upper or "MINER UNREACHABLE" in event_upper:
             state, description = "OFFLINE", "Miner unreachable"
         elif "CRITICAL ->" in event_upper or "HOLD (CRITICAL)" in event_upper:
             state, description = "MAX COOLING", (
@@ -1072,7 +1082,7 @@ def recent_thermal_events(limit=100, max_bytes=65536):
         else:
             # Routine telemetry and generic application log lines are not operational transitions.
             continue
-        if last_state.get(miner.casefold()) == state:
+        if state != "RECOVERED" and last_state.get(miner.casefold()) == state:
             continue
         last_state[miner.casefold()] = state
         events.append({"time": current_time, "state": state, "miner": miner,
@@ -1892,6 +1902,110 @@ def collector_loop():
         COLLECTOR_WAKE.clear()
 
 
+def dgb_recovery_enabled():
+    try:
+        data = json.loads(DGB_RECOVERY_SETTINGS_PATH.read_text())
+        return isinstance(data, dict) and data.get("enabled") is True
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_dgb_recovery_token():
+    """Create one private token in persistent dashboard data, without replacing it."""
+    try:
+        descriptor = os.open(DGB_RECOVERY_TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(secrets.token_hex(32) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def save_dgb_recovery_setting(enabled):
+    if type(enabled) is not bool:
+        raise ValueError("enabled must be a boolean")
+    with CONFIG_LOCK:
+        temporary = DGB_RECOVERY_SETTINGS_PATH.with_name(DGB_RECOVERY_SETTINGS_PATH.name + ".tmp")
+        try:
+            with temporary.open("w") as stream:
+                json.dump({"enabled": enabled}, stream)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, DGB_RECOVERY_SETTINGS_PATH)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def dgb_recovery_request(path, method="GET"):
+    token = DGB_RECOVERY_TOKEN_PATH.read_text().strip()
+    if len(token) != 64 or any(character not in "0123456789abcdef" for character in token):
+        raise ValueError("Invalid recovery bridge token")
+    request = Request(
+        DGB_RECOVERY_BRIDGE_URL + path,
+        data=b"{}" if method == "POST" else None,
+        method=method,
+        headers={
+            "X-DGB-Recovery-Token": token,
+            **({"Content-Type": "application/json"} if method == "POST" else {}),
+        },
+    )
+    with urlopen(request, timeout=4) as response:
+        return json.load(response) if method == "GET" else None
+
+
+def dgb_recovery_tick(now=None):
+    if not dgb_recovery_enabled():
+        return
+    now = time.monotonic() if now is None else now
+    try:
+        status = dgb_recovery_request("/api/node")
+    except (OSError, ValueError, URLError, HTTPError):
+        return
+    memory = status.get("memory") if isinstance(status, dict) else None
+    if not isinstance(memory, dict) or memory.get("state") != "paused":
+        return
+    pause = memory.get("pause")
+    if not isinstance(pause, dict) or pause.get("reason") != "unclean_exit":
+        return
+    pause_id = pause.get("id")
+    if not isinstance(pause_id, str) or not pause_id.strip():
+        return
+    with CONFIG_LOCK:
+        if not dgb_recovery_enabled():
+            return
+        if pause_id in DGB_RECOVERY_COMPLETED:
+            return
+        if now - DGB_RECOVERY_LAST_ATTEMPT.get(pause_id, float("-inf")) < DGB_RECOVERY_COOLDOWN:
+            return
+        DGB_RECOVERY_LAST_ATTEMPT[pause_id] = now
+        try:
+            dgb_recovery_request("/api/node/resume", "POST")
+        except HTTPError as error:
+            if error.code == 409:
+                DGB_RECOVERY_COMPLETED.add(pause_id)
+            return
+        except (OSError, ValueError, URLError):
+            return
+        else:
+            DGB_RECOVERY_COMPLETED.add(pause_id)
+            try:
+                with LOG_PATH.open("a") as stream:
+                    stream.write(f"==== THERMAL MODE {datetime.now(TZ):%Y-%m-%d %H:%M:%S} ====\nDGB Core | AUTO RESUMED AFTER UNCLEAN SHUTDOWN\n")
+            except OSError:
+                pass
+
+
+def dgb_recovery_loop():
+    while True:
+        try:
+            dgb_recovery_tick()
+        except Exception:
+            pass
+        time.sleep(DGB_RECOVERY_INTERVAL)
+
+
 
 
 def serve_static_file(handler):
@@ -1935,6 +2049,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/reset_all_runs_logs",
                 "/api/discord/test",
                 "/api/thermal-settings",
+                "/api/dgb-recovery",
                 "/api/miner-discovery/scan",
                 "/api/miner-management/add",
                 "/api/miner-management/update",
@@ -1976,6 +2091,22 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     },
                 )
+                return
+
+            if self.path == "/api/dgb-recovery":
+                length = int(self.headers.get("Content-Length", 0))
+                if length <= 0 or length > 128:
+                    self.send_json(400, {"ok": False, "error": "Invalid request size"})
+                    return
+                try:
+                    data = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(data, dict):
+                        raise ValueError("Invalid settings")
+                    save_dgb_recovery_setting(data.get("enabled"))
+                except (UnicodeDecodeError, ValueError) as error:
+                    self.send_json(400, {"ok": False, "error": str(error)})
+                    return
+                self.send_json(200, {"enabled": dgb_recovery_enabled()})
                 return
 
             if self.path == "/api/miner-discovery/scan":
@@ -2189,6 +2320,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, thermal_settings_payload())
             return
 
+        if self.path == "/api/dgb-recovery":
+            self.send_json(200, {"enabled": dgb_recovery_enabled()})
+            return
+
         parsed = urlparse(self.path)
         if self.path == "/api/miner-management":
             self.send_json(200, miner_management_payload())
@@ -2303,8 +2438,14 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"Miner dashboard V2 running on port {PORT}")
+    if os.environ.get("MINER_DASHBOARD_DATA_DIR"):
+        try:
+            ensure_dgb_recovery_token()
+        except OSError:
+            pass
     ensure_page3_public_token()
     startup_discovery()
     threading.Thread(target=collector_loop, name="miner-collector", daemon=True).start()
+    threading.Thread(target=dgb_recovery_loop, name="dgb-recovery", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.serve_forever()

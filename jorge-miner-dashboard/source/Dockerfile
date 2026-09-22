@@ -3,14 +3,14 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MINER_DASHBOARD_DATA_DIR=/data \
-    APP_VERSION=1.2.30
+    APP_VERSION=1.2.31
 
 WORKDIR /app
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app_v2.py discord_alerts.py miner_api.py miner_telemetry.py miner_thermal_mode.py thermal_locks.py ./
+COPY app_v2.py dgb_recovery_bridge.py discord_alerts.py miner_api.py miner_telemetry.py miner_thermal_mode.py thermal_locks.py ./
 COPY static ./static
 COPY tui ./tui
 COPY miners_v2.json discord_alert_config.json ./defaults/
