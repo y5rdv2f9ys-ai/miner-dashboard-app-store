@@ -3759,6 +3759,10 @@ svg {
         gap: 4px 9px;
         padding: 7px 9px;
     }
+    .mining-page .dgb-solo-card .dgb-recovery-control {
+        grid-column: 1 / -1;
+        grid-row: 4;
+    }
     .solo-card .solo-head { flex-wrap: wrap; gap: 2px 6px; }
     .solo-card .solo-head b, .solo-card .solo-head strong { font-size: 11px; }
     .solo-card .diff-focus { gap: 3px; }
