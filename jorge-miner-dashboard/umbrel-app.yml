@@ -2,7 +2,7 @@ manifestVersion: 1
 id: jorge-miner-dashboard
 category: bitcoin
 name: Jorge Miner Dashboard
-version: "1.2.32"
+version: "1.2.33"
 tagline: Monitor and manage your Bitcoin mining fleet
 icon: https://raw.githubusercontent.com/y5rdv2f9ys-ai/miner-dashboard-app-store/main/jorge-miner-dashboard/dashboard-icon.png
 description: >-
@@ -25,5 +25,5 @@ torOnly: false
 submitter: Jorge
 submission: https://github.com/y5rdv2f9ys-ai/miner-dashboard-app-store
 releaseNotes: >-
-  Fixes the mobile DGB Automatic Recovery row overlapping the best-share statistics.
-  Keeps the compact side-by-side statistics and existing desktop layout.
+  Allows the Mining page to scroll vertically when its content exceeds the viewport.
+  Preserves the existing card layout and DGB recovery spacing.
